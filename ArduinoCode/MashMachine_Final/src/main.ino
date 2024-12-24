@@ -1032,21 +1032,16 @@ void setupWiFi()
 }
 void reconnect()
 {
-  
-  while(!client.connected())
+  //Serial.print("\nConnecting to ");
+  //Serial.println(privates.broker);
+  if(client.connect("boll", privates.brokerUser, privates.brokerPass))
   {
-    //Serial.print("\nConnecting to ");
+    //Serial.print("\nConnected to ");
     //Serial.println(privates.broker);
-    if(client.connect("boll", privates.brokerUser, privates.brokerPass))
-    {
-      //Serial.print("\nConnected to ");
-      //Serial.println(privates.broker);
-    }
-    else
-    {
-      Serial.println("\nTrying connect again");
-      delay(4000);
-    }
+  }
+  else
+  {
+    Serial.println("\nTrying connect again");
   }
 }
 void publishMessage()
