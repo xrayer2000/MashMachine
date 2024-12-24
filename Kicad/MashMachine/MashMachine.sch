@@ -1,0 +1,416 @@
+EESchema Schematic File Version 4
+LIBS:MashMachine-cache
+EELAYER 26 0
+EELAYER END
+$Descr A4 11693 8268
+encoding utf-8
+Sheet 1 1
+Title ""
+Date ""
+Rev ""
+Comp ""
+Comment1 ""
+Comment2 ""
+Comment3 ""
+Comment4 ""
+$EndDescr
+$Comp
+L Transistor_FET:IRLZ44N Q1
+U 1 1 662CEBE8
+P 6500 4250
+F 0 "Q1" H 6705 4296 50  0000 L CNN
+F 1 "IRLZ44N" H 6705 4205 50  0000 L CNN
+F 2 "Package_TO_SOT_THT:TO-220-3_Vertical" H 6750 4175 50  0001 L CIN
+F 3 "http://www.irf.com/product-info/datasheets/data/irlz44n.pdf" H 6500 4250 50  0001 L CNN
+	1    6500 4250
+	1    0    0    -1  
+$EndComp
+$Comp
+L Device:LED ON1
+U 1 1 662CEC62
+P 2800 3400
+F 0 "ON1" H 2800 3500 50  0000 C CNN
+F 1 "LED" H 2950 3350 50  0000 C CNN
+F 2 "LED_THT:LED_D3.0mm" H 2800 3400 50  0001 C CNN
+F 3 "~" H 2800 3400 50  0001 C CNN
+	1    2800 3400
+	1    0    0    -1  
+$EndComp
+$Comp
+L SSD1306-128x64_OLED:SSD1306 Brd2
+U 1 1 662CED16
+P 7450 5900
+F 0 "Brd2" H 7300 5500 50  0000 L CNN
+F 1 "SSD1306 Display 2, address 0x7A (GND,VCC,SCL,SDA) " V 7750 4050 50  0000 L CNN
+F 2 "SSD1306:ssd1306_1.3''" H 7450 6150 50  0001 C CNN
+F 3 "" H 7450 6150 50  0001 C CNN
+	1    7450 5900
+	0    -1   -1   0   
+$EndComp
+$Comp
+L Device:R R1
+U 1 1 662CED9E
+P 2500 3150
+F 0 "R1" H 2450 3300 50  0000 L CNN
+F 1 "1000" V 2500 3050 50  0000 L CNN
+F 2 "Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P7.62mm_Horizontal" V 2430 3150 50  0001 C CNN
+F 3 "~" H 2500 3150 50  0001 C CNN
+	1    2500 3150
+	0    -1   -1   0   
+$EndComp
+$Comp
+L Connector_Generic:Conn_01x02 J3
+U 1 1 662CEFF2
+P 8200 3500
+F 0 "J3" H 8280 3492 50  0000 L CNN
+F 1 "Solid state Relay Out" H 8280 3401 50  0000 L CNN
+F 2 "Connector_PinHeader_2.54mm:PinHeader_1x02_P2.54mm_Vertical" H 8200 3500 50  0001 C CNN
+F 3 "~" H 8200 3500 50  0001 C CNN
+	1    8200 3500
+	1    0    0    -1  
+$EndComp
+$Comp
+L Connector_Generic:Conn_01x03 J1
+U 1 1 662CF045
+P 3050 4750
+F 0 "J1" H 2970 4425 50  0000 C CNN
+F 1 "Element Temp" H 2970 4516 50  0000 C CNN
+F 2 "Connector_PinHeader_2.54mm:PinHeader_1x03_P2.54mm_Vertical" H 3050 4750 50  0001 C CNN
+F 3 "~" H 3050 4750 50  0001 C CNN
+	1    3050 4750
+	-1   0    0    1   
+$EndComp
+$Comp
+L Connector_Generic:Conn_01x03 J2
+U 1 1 662CF0C8
+P 3050 4250
+F 0 "J2" H 2970 3925 50  0000 C CNN
+F 1 "MashTemp" H 2970 4016 50  0000 C CNN
+F 2 "Connector_PinHeader_2.54mm:PinHeader_1x03_P2.54mm_Vertical" H 3050 4250 50  0001 C CNN
+F 3 "~" H 3050 4250 50  0001 C CNN
+	1    3050 4250
+	-1   0    0    1   
+$EndComp
+$Comp
+L ESP32-DEVKIT-V1:ESP32-DEVKIT-V1 U1
+U 1 1 662CF1E0
+P 5000 4150
+F 0 "U1" H 5000 5417 50  0000 C CNN
+F 1 "ESP32-DEVKIT-V1" H 5000 5326 50  0000 C CNN
+F 2 "ESP32-DEVKIT-V1:MODULE_ESP32_DEVKIT_V1" H 5000 4150 50  0001 L BNN
+F 3 "" H 5000 4150 50  0001 L BNN
+F 4 "Do it" H 5000 4150 50  0001 L BNN "MF"
+F 5 "6.8 mm" H 5000 4150 50  0001 L BNN "MAXIMUM_PACKAGE_HEIGHT"
+F 6 "None" H 5000 4150 50  0001 L BNN "Package"
+F 7 "None" H 5000 4150 50  0001 L BNN "Price"
+F 8 "https://www.snapeda.com/parts/ESP32-DEVKIT-V1/Do+it/view-part/?ref=eda" H 5000 4150 50  0001 L BNN "Check_prices"
+F 9 "Manufacturer Recommendations" H 5000 4150 50  0001 L BNN "STANDARD"
+F 10 "N/A" H 5000 4150 50  0001 L BNN "PARTREV"
+F 11 "https://www.snapeda.com/parts/ESP32-DEVKIT-V1/Do+it/view-part/?ref=snap" H 5000 4150 50  0001 L BNN "SnapEDA_Link"
+F 12 "ESP32-DEVKIT-V1" H 5000 4150 50  0001 L BNN "MP"
+F 13 "\\nDual core, Wi-Fi: 2.4 GHz up to 150 Mbits/s,BLE (Bluetooth Low Energy) and legacy Bluetooth, 32 bits, Up to 240 MHz\\n" H 5000 4150 50  0001 L BNN "Description"
+F 14 "Not in stock" H 5000 4150 50  0001 L BNN "Availability"
+F 15 "DOIT" H 5000 4150 50  0001 L BNN "MANUFACTURER"
+	1    5000 4150
+	1    0    0    -1  
+$EndComp
+$Comp
+L Device:LED DC1
+U 1 1 662CF2B1
+P 2800 3150
+F 0 "DC1" H 2791 3367 50  0000 C CNN
+F 1 "LED" H 2791 3276 50  0000 C CNN
+F 2 "LED_THT:LED_D3.0mm" H 2800 3150 50  0001 C CNN
+F 3 "~" H 2800 3150 50  0001 C CNN
+	1    2800 3150
+	1    0    0    -1  
+$EndComp
+$Comp
+L SSD1306-128x64_OLED:SSD1306 Brd1
+U 1 1 662CF30E
+P 7450 5300
+F 0 "Brd1" V 7500 4800 50  0000 L CNN
+F 1 "SSD1306 Display 1, Addesss 0x78, (GND,VCC,SCL,SDA) " V 7750 3450 50  0000 L CNN
+F 2 "SSD1306:ssd1306_1.3''" H 7450 5550 50  0001 C CNN
+F 3 "" H 7450 5550 50  0001 C CNN
+	1    7450 5300
+	0    -1   -1   0   
+$EndComp
+$Comp
+L Device:R R2
+U 1 1 662D0749
+P 2500 3400
+F 0 "R2" H 2450 3550 50  0000 L CNN
+F 1 "1000" V 2500 3300 50  0000 L CNN
+F 2 "Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P7.62mm_Horizontal" V 2430 3400 50  0001 C CNN
+F 3 "~" H 2500 3400 50  0001 C CNN
+	1    2500 3400
+	0    -1   -1   0   
+$EndComp
+Wire Wire Line
+	4400 4150 3500 4150
+Wire Wire Line
+	3500 4150 3500 4250
+Wire Wire Line
+	3500 4250 3250 4250
+Wire Wire Line
+	5600 4550 6150 4550
+Wire Wire Line
+	6150 4550 6150 5650
+Wire Wire Line
+	6150 5650 3500 5650
+Wire Wire Line
+	3500 5650 3500 4750
+Wire Wire Line
+	3500 4750 3250 4750
+Wire Wire Line
+	5600 5100 5600 5000
+Wire Wire Line
+	5600 5100 5600 5500
+Wire Wire Line
+	5600 5500 3750 5500
+Wire Wire Line
+	3250 5500 3250 4850
+Connection ~ 5600 5100
+Wire Wire Line
+	3250 4350 3750 4350
+Wire Wire Line
+	3750 4350 3750 5500
+Connection ~ 3750 5500
+Wire Wire Line
+	3750 5500 3250 5500
+Wire Wire Line
+	4400 3150 4250 3150
+Wire Wire Line
+	3250 3150 3250 4150
+Wire Wire Line
+	3250 4650 3350 4650
+Wire Wire Line
+	3350 4650 3350 3150
+Connection ~ 3350 3150
+Wire Wire Line
+	3350 3150 3250 3150
+Wire Wire Line
+	5600 4350 6300 4350
+Wire Wire Line
+	6300 4350 6300 4250
+Wire Wire Line
+	7100 5450 6950 5450
+Wire Wire Line
+	6950 5450 6950 6050
+Wire Wire Line
+	6950 6050 7100 6050
+Wire Wire Line
+	7100 5950 6900 5950
+Wire Wire Line
+	6900 5950 6900 5350
+Wire Wire Line
+	6900 5350 7100 5350
+Wire Wire Line
+	7100 5750 7050 5750
+Wire Wire Line
+	7050 5750 7050 5150
+Wire Wire Line
+	7050 5150 7100 5150
+Wire Wire Line
+	7100 5850 7000 5850
+Wire Wire Line
+	7000 5850 7000 5250
+Wire Wire Line
+	7000 5250 7100 5250
+Wire Wire Line
+	5600 4050 6200 4050
+Wire Wire Line
+	6200 4050 6200 3750
+Wire Wire Line
+	7350 4700 7000 4700
+Wire Wire Line
+	7000 4700 7000 5250
+Connection ~ 7000 5250
+Wire Wire Line
+	7050 5750 4400 5750
+Wire Wire Line
+	4400 5750 4400 4950
+Connection ~ 7050 5750
+$Comp
+L Device:Rotary_Encoder_Switch SW1
+U 1 1 662D6E78
+P 6750 3300
+F 0 "SW1" H 6750 3667 50  0000 C CNN
+F 1 "Rotary_Encoder_Switch" H 6750 3576 50  0000 C CNN
+F 2 "Rotary_Encoder:RotaryEncoder_Alps_EC11E-Switch_Vertical_H20mm" H 6600 3460 50  0001 C CNN
+F 3 "~" H 6750 3560 50  0001 C CNN
+	1    6750 3300
+	1    0    0    -1  
+$EndComp
+Wire Wire Line
+	5600 4250 6000 4250
+Wire Wire Line
+	6000 4250 6000 3650
+Wire Wire Line
+	6000 3650 7050 3650
+Wire Wire Line
+	7050 3650 7050 3400
+Wire Wire Line
+	4250 3150 4250 2500
+Wire Wire Line
+	4250 2500 7050 2500
+Wire Wire Line
+	7050 2500 7050 3200
+Connection ~ 4250 3150
+Wire Wire Line
+	4250 3150 3350 3150
+Wire Wire Line
+	4400 4550 3950 4550
+Wire Wire Line
+	3950 4550 3950 3400
+Wire Wire Line
+	3950 3400 2950 3400
+Wire Wire Line
+	2350 3150 2350 3400
+Wire Wire Line
+	3250 5500 2350 5500
+Wire Wire Line
+	2350 5500 2350 3400
+Connection ~ 3250 5500
+Connection ~ 2350 3400
+Wire Wire Line
+	5600 5100 5900 5100
+Wire Wire Line
+	6450 3300 5900 3300
+Wire Wire Line
+	5900 3300 5900 5100
+Connection ~ 5900 5100
+Wire Wire Line
+	5900 5100 6600 5100
+Wire Wire Line
+	4400 4450 4100 4450
+Wire Wire Line
+	4100 4450 4100 2300
+Wire Wire Line
+	4100 2300 6100 2300
+Wire Wire Line
+	6100 2300 6100 3200
+Wire Wire Line
+	6100 3200 6450 3200
+Wire Wire Line
+	5600 3750 6050 3750
+Wire Wire Line
+	6050 3750 6050 3400
+Wire Wire Line
+	6050 3400 6450 3400
+Wire Wire Line
+	6600 4050 6600 4000
+$Comp
+L Device:Buzzer BZ1
+U 1 1 662F3D73
+P 6100 6100
+F 0 "BZ1" H 6253 6129 50  0000 L CNN
+F 1 "Alarm" H 6253 6038 50  0000 L CNN
+F 2 "Buzzer_Beeper:Buzzer_12x9.5RM7.6" V 6075 6200 50  0001 C CNN
+F 3 "~" V 6075 6200 50  0001 C CNN
+	1    6100 6100
+	1    0    0    -1  
+$EndComp
+Wire Wire Line
+	5600 4650 5850 4650
+Wire Wire Line
+	5850 4650 5850 6000
+Wire Wire Line
+	5850 6000 6000 6000
+Wire Wire Line
+	5600 5500 5600 6200
+Wire Wire Line
+	5600 6200 6000 6200
+Connection ~ 5600 5500
+Wire Wire Line
+	6200 3750 7350 3750
+Wire Wire Line
+	7350 3750 7350 4700
+Wire Wire Line
+	6600 4000 7750 4000
+Wire Wire Line
+	7750 4000 7750 3500
+Wire Wire Line
+	7750 3500 8000 3500
+Wire Wire Line
+	6600 4450 6600 5100
+Wire Wire Line
+	7050 2500 7400 2500
+Wire Wire Line
+	7900 2500 7900 3600
+Wire Wire Line
+	7900 3600 8000 3600
+Connection ~ 7050 2500
+Wire Wire Line
+	6300 4250 6300 3850
+Wire Wire Line
+	6300 3850 7300 3850
+Wire Wire Line
+	7300 3850 7300 2150
+Wire Wire Line
+	7300 2150 2950 2150
+Wire Wire Line
+	2950 2150 2950 3150
+Connection ~ 6300 4250
+$Comp
+L Mechanical:MountingHole H2
+U 1 1 6630D04A
+P 2600 2350
+F 0 "H2" H 2700 2396 50  0000 L CNN
+F 1 "MountingHole" H 2700 2305 50  0000 L CNN
+F 2 "MountingHole:MountingHole_3.2mm_M3_DIN965_Pad" H 2600 2350 50  0001 C CNN
+F 3 "~" H 2600 2350 50  0001 C CNN
+	1    2600 2350
+	1    0    0    -1  
+$EndComp
+$Comp
+L Mechanical:MountingHole H3
+U 1 1 6630D1FB
+P 7700 2150
+F 0 "H3" H 7800 2196 50  0000 L CNN
+F 1 "MountingHole" H 7800 2105 50  0000 L CNN
+F 2 "MountingHole:MountingHole_3.2mm_M3_DIN965_Pad" H 7700 2150 50  0001 C CNN
+F 3 "~" H 7700 2150 50  0001 C CNN
+	1    7700 2150
+	1    0    0    -1  
+$EndComp
+$Comp
+L Mechanical:MountingHole H1
+U 1 1 6630F06B
+P 2350 5850
+F 0 "H1" H 2450 5896 50  0000 L CNN
+F 1 "MountingHole" H 2450 5805 50  0000 L CNN
+F 2 "MountingHole:MountingHole_3.2mm_M3_DIN965_Pad" H 2350 5850 50  0001 C CNN
+F 3 "~" H 2350 5850 50  0001 C CNN
+	1    2350 5850
+	1    0    0    -1  
+$EndComp
+$Comp
+L Mechanical:MountingHole H4
+U 1 1 66310EE2
+P 8050 4800
+F 0 "H4" H 8150 4846 50  0000 L CNN
+F 1 "MountingHole" H 8150 4755 50  0000 L CNN
+F 2 "MountingHole:MountingHole_3.2mm_M3_DIN965_Pad" H 8050 4800 50  0001 C CNN
+F 3 "~" H 8050 4800 50  0001 C CNN
+	1    8050 4800
+	1    0    0    -1  
+$EndComp
+Wire Wire Line
+	6600 5100 6600 5450
+Wire Wire Line
+	6600 5450 6950 5450
+Connection ~ 6600 5100
+Connection ~ 6950 5450
+Wire Wire Line
+	6900 5350 6900 4100
+Wire Wire Line
+	6900 4100 7400 4100
+Wire Wire Line
+	7400 4100 7400 2500
+Connection ~ 6900 5350
+Connection ~ 7400 2500
+Wire Wire Line
+	7400 2500 7900 2500
+$EndSCHEMATC
