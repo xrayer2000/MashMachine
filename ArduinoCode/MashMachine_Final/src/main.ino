@@ -1052,7 +1052,7 @@
 //   if(currentTime - previousTime > 1000)
 //   {
 //     snprintf(messages, 10, "%ld", (int)current_temp_DS18B20);
-//     client.publish(privates.outTopic, messages);
+//     //client.publish(privates.outTopic, messages);
 //     previousTime = millis();
 //   }
 // }

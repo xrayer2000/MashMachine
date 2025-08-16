@@ -1079,7 +1079,7 @@ double Pid(double error, float kp, float ki, float kd)
   return output;
 }
 
-void setupWiFi()
+void setupWiFi() //Homeassistant
 {
   WiFi.begin(privates.ssid, privates.pass);
 /*Serial.print("\nConeccting to ");
@@ -1091,9 +1091,8 @@ void setupWiFi()
   }
   Serial.print("\nConnected to ");
   Serial.println(privates.ssid);*/
-  
 }
-void reconnect()
+void reconnect() //Homeassistant
 {
   //Serial.print("\nConnecting to ");
   //Serial.println(privates.broker);
@@ -1107,7 +1106,8 @@ void reconnect()
     //Serial.println("\nTrying connect again");
   }
 }
-void publishMessage()
+
+void publishMessage() //Homeassistant
 {
     if(!client.connected()){reconnect();}
     client.loop();
@@ -1122,14 +1122,16 @@ void publishMessage()
     snprintf(messages, 5, "%f", DutyCycle/4096.0 * 100.0);
     client.publish(privates.topicDutyCycle, messages);
 }
-void subscribeMessage()
+
+void subscribeMessage() //Homeassistant
 {
     if(!client.connected()){reconnect();}
     client.loop();
     client.subscribe(privates.topicTargetTemp); 
 }
-void callback(char* topic, byte* payload, unsigned int length) {
-  
+
+void callback(char* topic, byte* payload, unsigned int length) //Homeassistant
+{
   if ( !TopicArrived )
   {
     memset( mqttpayload, '\0', mqttpayloadSize ); // clear payload char buffer
@@ -1138,5 +1140,4 @@ void callback(char* topic, byte* payload, unsigned int length) {
     memcpy( mqttpayload, payload, length );
     TopicArrived = true;
   }
-
 }
