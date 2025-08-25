@@ -8,25 +8,18 @@
 #include <DallasTemperature.h> //temperatur
 #include <PID_v1.h> //PID
 #include <PressButton.h> //Interface
-#include <RotaryEncoder.h>; //Interface
+#include <RotaryEncoderAccel.h>; //Interface
 #include <EEPROM.h> //Save Settings
 #include <WiFi.h> //Home assistant
 #include <PubSubClient.h> //Home assistant
 #include "Privates.h" //Homeassistant 
 #include <math.h>
-
-Privates privates; //Homeassistant
-WiFiClient espClient; //Home assistant
-PubSubClient client(espClient); //Home assistant
-char messages[50]; //Home assistant
-volatile  bool TopicArrived = false;
-const     int mqttpayloadSize = 10;
-char mqttpayload [mqttpayloadSize] = {'\0'};
-String mqtttopic;
-
-#define SCREEN_WIDTH 128 // OLED display1 width, in pixels
-#define SCREEN_HEIGHT 64 // OLED display1 height, in pixels
-
+//-----------------------------------------------------------------------
+// OLED display
+#define SCREEN_WIDTH 128 // OLED display width, in pixels
+#define SCREEN_HEIGHT 64 // OLED display height, in pixels
+//-----------------------------------------------------------------------
+//IO-pins
 #define oneWireBus1pin 4 //pin 4 ESP32 - temperatur
 #define oneWireBus2pin 32 //pin 32 ESP32 - temperatur thermostat
 #define oneWireBus3pin 17 //pin 17 ESP32 - temperatur luft
@@ -34,7 +27,11 @@ String mqtttopic;
 #define confirmBtnPin 25 // pin 25 ESP32 - ok
 #define ledOnPin 14 //pin 14 ESP32 - röd LED
 #define alarmPin 33 //pin 33 ESP32 - alarm
-
+//rotary encoder
+#define outputA 13 //pin 13 ESP32 - 
+#define outputB 16 //pin 16 ESP32 - 
+//-----------------------------------------------------------------------
+//Settings
 #define DISP_ITEM_ROWS 4
 #define DISP_CHAR_WIDTH 16
 #define PACING_MC 30 //25
@@ -43,21 +40,37 @@ String mqtttopic;
 #define CHAR_X SCREEN_WIDTH/DISP_CHAR_WIDTH // 240/16
 #define CHAR_Y SCREEN_HEIGHT/DISP_ITEM_ROWS // 240/8
 #define SHIFT_UP 0 //240/8
+//-----------------------------------------------------------------------
+//Varibles
 
+//Homeassistant
+//-----------------------------------------------------------------------
+Privates privates; //Homeassistant
+WiFiClient espClient; //Home assistant
+PubSubClient client(espClient); //Home assistant
+char messages[50]; //Home assistant
+volatile  bool TopicArrived = false;
+const     int mqttpayloadSize = 10;
+char mqttpayload [mqttpayloadSize] = {'\0'};
+String mqtttopic;
+//-----------------------------------------------------------------------
 //rotary encoder
-#define outputA 13 //pin 13 ESP32 - 
-#define outputB 16 //pin 16 ESP32 - 
-RotaryEncoder encoder(outputA,outputB,5,1,60000);
-
+RotaryEncoderAccel encoder(outputA,outputB);
+// ISR för båda pins, som anropas vid ändring (rising/falling)
+void IRAM_ATTR handleEncoderInterrupt() {
+  encoder.tick();
+}
+//-----------------------------------------------------------------------
 //Buttons
 PressButton btnOk(confirmBtnPin);
-
+void IRAM_ATTR handleButtonInterrupt() {
+  btnOk.CaptureDownState();
+}
+//-----------------------------------------------------------------------
 //Menu structure
 enum pageType{
   MENU_ROOT,
   MENU_TARGET_TEMP,
-  MENU_TARGET_TEMP_A,
-  MENU_TARGET_TEMP_B,
   MENU_TEMPERATURES,
   MENU_MISC,
   MENU_PID,
@@ -67,24 +80,28 @@ enum pageType{
 enum pageType currPage = MENU_ROOT;
 void page_MenuRoot();
 void page_MENU_TARGET_TEMP();
-void page_MENU_TARGET_TEMP_A();
-void page_MENU_TARGET_TEMP_B();
-void page_TEMPERATURES();
 void page_MENU_MISC();
 void page_MENU_PID();
 void page_MENU_TIME();
-
+//-----------------------------------------------------------------------
 //Menu internals
-uint32_t loopStartMs;
-boolean updateAllItems;
+boolean updateAllItems = true;
 boolean updateItemValue;
 uint8_t itemCnt;
-uint8_t pntrPos;
+int8_t cursorPos;
+uint8_t saveCursorPos;
 uint8_t dispOffset;
+uint8_t saveDispOffset;
+bool edditing = false;
+bool detectedRotation = false;
 uint8_t root_pntrPos = 1;
 uint8_t root_dispOffset = 0;
 uint8_t flashCntr;
 boolean flashIsOn;
+bool initPage = true;
+bool changeValue = false;
+bool changeValues [10];
+
 void initMenuPage(String title, uint8_t itemCount);
 void captureButtonDownStates();
 void incrementDecrementDouble(double *v, double amount, double min, double max);
@@ -92,13 +109,13 @@ void doPointerNavigation();
 bool isFlashChanged();
 void pacingWait();
 bool menuItemPrintable(uint8_t xPos, uint8_t yPos);
-
+//-----------------------------------------------------------------------
 //Print tools
 void printPointer();
 void printOnOff(bool val);
-void printUint32_tAtWidth(uint32_t value, uint8_t width, char c, boolean isRight);
-void printDoubleAtWidth(double value, uint8_t width, char c, boolean isRight);
-
+void printUint32_tAtWidth(uint32_t value, uint8_t width, char c);
+void printDoubleAtWidth(double value, uint8_t width, char c);
+//-----------------------------------------------------------------------
 //Settings
 #pragma pack(1) //memory alignment
 struct Mysettings{
@@ -129,9 +146,30 @@ struct Mysettings{
 };
 
 Mysettings settings;
+Mysettings oldSettings;
 void sets_SetDefaults();
 void sets_Load();
 void sets_Save();
+//-----------------------------------------------------------------------
+//Time
+unsigned long previousTime = 0; 
+unsigned long currentTime;
+const unsigned long saveInterval = 60000; // 60 000 ms = 60 sekunder
+unsigned long lastEditTime = 0;
+double tS;
+long passedTimeS;
+long previousPassedTimeS;
+double passedTime,previousPassedTime1,previousPassedTime2 = 0;
+//-----------------------------------------------------------------------
+//Temperatur
+OneWire oneWire1(oneWireBus1pin);
+DallasTemperature sensor1(&oneWire1);
+
+OneWire oneWire2(oneWireBus2pin);
+DallasTemperature sensor2(&oneWire2);
+
+OneWire oneWire3(oneWireBus3pin);
+DallasTemperature sensor3(&oneWire3);
 
 double current_mashTemp;
 double previous_mashTemp;
@@ -139,21 +177,14 @@ double current_thermostatTemp;
 double previous_thermostatTemp;
 double current_airTemp;
 double previous_airTemp;
-
+//-----------------------------------------------------------------------
 double loadCompensation;
 
 double RawRange;
 double ReferenceHigh = 100.0;
 double ReferenceLow = 0.0;
 double ReferenceRange = ReferenceHigh - ReferenceLow;
-
-bool raiseTemp_status;
-double previousTargetTemp;
-unsigned long previousTime = 0; 
-unsigned long currentTime;
-unsigned long loopTime;
-bool heat = false;
-
+//-----------------------------------------------------------------------
 //PID
 double error;
 double previousError;
@@ -167,41 +198,27 @@ double previousDutyCycle = 0;
 double targetElementTemp = settings.maxElementTemp - settings.marginalTemp;
 PID PID_mashTemp(&current_mashTemp, &Output_mashTemp, &settings.targetTemp, settings.Kp_mash, settings.Ki_mash, 0, DIRECT);
 PID PID_elementTemp(&current_thermostatTemp, &Output_elementTemp, &targetElementTemp, settings.Kp_element, settings.Ki_element, 0, DIRECT);
-
-double tS;
-long passedTimeS;
-long previousPassedTimeS;
-
+//-----------------------------------------------------------------------
 // setting PWM properties
 int freq = 5; //5
 const int ledChannel = 0;
 const int resolution = 12;
-
-//rotary encoder
-int counter = 1; 
-int aState;
-int bState;
-int aLastState;  
  
 // Declaration for an SSD1306 display1 connected to I2C (SDA, SCL pins)
 //Adafruit_SSD1306 display1(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
+//-----------------------------------------------------------------------
+// Oled - Adafruit_SSD1306
 U8G2_SH1106_128X64_NONAME_F_HW_I2C display1(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
 U8G2_SH1106_128X64_NONAME_F_HW_I2C display2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
+long timeLastTouched = 0;
+const long timeBeforeDisable = 120000;
+//-----------------------------------------------------------------------
 
-OneWire oneWire1(oneWireBus1pin);
-DallasTemperature sensor1(&oneWire1);
 
-OneWire oneWire2(oneWireBus2pin);
-DallasTemperature sensor2(&oneWire2);
-
-OneWire oneWire3(oneWireBus3pin);
-DallasTemperature sensor3(&oneWire3);
-
-void setup() {//=================================================SETUP=======================================================
+void setup() {
+//=================================================SETUP=======================================================
   Serial.begin(115200);
-  setupWiFi(); //Home assistant
-  client.setServer(privates.broker, 1883); //Home assistant
-  client.setCallback(callback);
+
   sensor1.begin();
   sensor2.begin();
   sensor3.begin();
@@ -210,7 +227,6 @@ void setup() {//=================================================SETUP==========
   sensor3.setResolution(9);
 
   currentTime = millis();
-  loopTime = currentTime;
 
   // configure LED PWM functionalitites
   ledcSetup(ledChannel, freq, resolution);
@@ -226,23 +242,29 @@ void setup() {//=================================================SETUP==========
   pinMode(outputA,INPUT_PULLUP);
   pinMode(outputB,INPUT_PULLUP);
 
-  Wire.setClock(3400000 );      
-  display1.setBusClock(3400000 ); 
-  display2.setBusClock(3400000 ); 
+    // Koppla interrupt på båda encoder-pins till samma ISR
+  attachInterrupt(digitalPinToInterrupt(outputA), handleEncoderInterrupt, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(outputB), handleEncoderInterrupt, CHANGE);
 
-  display1.setI2CAddress(0x78); 
+  attachInterrupt(digitalPinToInterrupt(confirmBtnPin), handleButtonInterrupt, CHANGE);
+
+  Wire.begin(21, 22);           // pins only
+  
+  display1.setI2CAddress(0x3C << 1); 
   display1.begin();  
+  display1.setBusClock(3400000);    // ask U8g2 to set speed
   display1.setFont(u8g2_font_6x10_mf);	// choose a suitable font
   display1.clearBuffer();					// clear the internal memory
   display1.setCursor(0, 0);
 
-  display2.setI2CAddress(0x7A);
+  display2.setI2CAddress(0x3D << 1);
   display2.begin();  
+  display2.setBusClock(3400000);    // ask U8g2 to set speed
   display2.setFont(u8g2_font_6x10_mf);	// choose a suitable font  
   display2.clearBuffer();					// clear the internal memory
   display2.setCursor(0, 0);
 
-  EEPROM.begin(512);
+  EEPROM.begin(sizeof(settings));
   sets_Load();
   
   PID_mashTemp.SetTunings(settings.Kp_mash, settings.Ki_mash, 0);
@@ -255,478 +277,330 @@ void setup() {//=================================================SETUP==========
   PID_elementTemp.SetMode(AUTOMATIC);
   PID_elementTemp.Compute();
 
+  setupWiFi(); //Home assistant
+  setupMQTT(); //Home assistant
+
 }
 
 void loop() { //=================================================LOOP=======================================================
 
-  currentTime = millis();
+  passedTime = millis()/1000.0;
   
+  if(millis() - timeLastTouched > timeBeforeDisable)
+  {
+    display1.setPowerSave(1);
+    display2.setPowerSave(1);
+  }
+  else
+  {
+    display1.setPowerSave(0);
+    display2.setPowerSave(0);
+  }
+
   RawRange = settings.RawHigh - settings.RawLow;
+
+  const float UPDATE_INTERVAL1 = 0.25;
+  const float UPDATE_INTERVAL2 = 0.01;
+  
+  bool shouldUpdate1 = (passedTime - previousPassedTime1 >= UPDATE_INTERVAL1);
+  bool shouldUpdate2 = (passedTime - previousPassedTime2 >= UPDATE_INTERVAL2);
+  updateSettings();
+
+  if(shouldUpdate1)
+  {
+    updateSensorValues(); 
+    updateDisp2();
+    previousPassedTime1 = passedTime;
+  }
+
   switch (currPage)
   {
-  case MENU_ROOT: page_MenuRoot(); break;
-  case MENU_TARGET_TEMP: page_MENU_TARGET_TEMP(); break;
-  case MENU_TARGET_TEMP_A: page_MENU_TARGET_TEMP_A(); break;
-  case MENU_TARGET_TEMP_B: page_MENU_TARGET_TEMP_B(); break;
-  case MENU_TEMPERATURES: page_TEMPERATURES(); break;
-  case MENU_MISC: page_MENU_MISC(); break;
-  case MENU_PID: page_MENU_PID(); break;
-  case MENU_TIME: page_MENU_TIME(); break;
+    case MENU_ROOT: page_MenuRoot(); break;
+    case MENU_TARGET_TEMP: page_MENU_TARGET_TEMP(); break;
+    case MENU_MISC: page_MENU_MISC(); break;
+    case MENU_PID: page_MENU_PID(); break;
+    case MENU_TIME: page_MENU_TIME(); break;
   }
-}
 
-void page_MenuRoot(){//=================================================ROOT_MENU============================================
-  pntrPos = root_pntrPos;
-  dispOffset = root_dispOffset;
-  //Serial.println("root");
-  initMenuPage(F("MAIN MENU"), 5);
-  
-  double passedTime,previousPassedTime = 0;
-
-  while(true){
-    
-    passedTime = millis() / (1000.0);
-
-   if(passedTime - previousPassedTime >= 0.8)
-      updateSettings();
-
-    if(updateAllItems)
-    {
-      previousPassedTime = passedTime;
-      passedTime = 0;
-      updateSensorValues(); 
-      updateDisp2();
-
-      display1.clearBuffer(); 
-      if(menuItemPrintable(1,1)){display1.print(F("TARGET_TEMP  "));} //kan inte ändra
-      if(menuItemPrintable(1,2)){display1.print(F("LIVE VARIBLES"));} //kan inte ändra
-      if(menuItemPrintable(1,3)){display1.print(F("MISC         "));} //kan ändra
-      if(menuItemPrintable(1,4)){display1.print(F("PID          "));} //settings, kan ändra
-      if(menuItemPrintable(1,5)){display1.print(F("MashProgram  "));} //settings, kan ändra  
-      printPointer();
-      display1.sendBuffer();
-    }
-
-    updateAllItems = false;
-    captureButtonDownStates();
-
-    if(btnOk.PressReleased())
-    {
-      FlashPointer();
-      root_pntrPos = pntrPos;
-      root_dispOffset = dispOffset;
-      //Serial.print("root_pntrPos-root_dispOffset: ");
-      //Serial.println(root_pntrPos-root_dispOffset);
-      switch (pntrPos)
-      {
-      case 1: currPage = MENU_TARGET_TEMP; return;
-      case 2: currPage = MENU_TEMPERATURES; return;
-      case 3: currPage = MENU_MISC; return;
-      case 4: currPage = MENU_PID; return;
-      case 5: currPage = MENU_TIME; return;
-      }
-    }
-    doPointerNavigation();
-    if(passedTime - previousTime > 1.0)
-    {
-      publishMessage();
-      subscribeMessage();
-      previousTime = millis() / 1000.0;
-    }
-  }
-  }
-void page_MENU_TARGET_TEMP(){//=================================================TARGET_TEMP============================================
-  pntrPos = 1;
-  dispOffset = 0;
-  initMenuPage(F("TARGET_TEMP"), 4);
-  
-  double passedTime,previousPassedTime = 0;
-  bool changeValue = false;
-  while(true){
-    passedTime = millis() / (1000.0);
-
-    if(passedTime - previousPassedTime >= 0.8)
-      updateSettings();
-
-    if(changeValue)
-      incrementDecrementDouble(&settings.targetTemp, 1, 15.0, 100.0);
-    else 
-     doPointerNavigation(); 
-
-    if(updateAllItems)
-    {
-      previousPassedTime = passedTime;
-      passedTime = 0;
-      updateSensorValues();
-      updateDisp2();
-      display1.clearBuffer();
-      if(menuItemPrintable(1,1)){display1.print(F("Target_Temp =     "));}
-      if(menuItemPrintable(1,2)){display1.print(F("TargetTemp_A      "));}
-      if(menuItemPrintable(1,3)){display1.print(F("TargetTemp_B      "));}
-      if(menuItemPrintable(1,4)){display1.print(F("Back              "));}
-      printPointer();
-    }
-
-    if(updateAllItems || updateItemValue)
-    {
-      if(menuItemPrintable(13,1)){printDoubleAtWidth(settings.targetTemp, 4, ' ', false);}
-      display1.sendBuffer();
-    }
-    updateAllItems = false;
-    updateItemValue = false;
-
-    captureButtonDownStates();
-
-    if(btnOk.PressReleased())
-    {
-      FlashPointer();
-      switch (pntrPos)
-      {
-        case 1: changeValue = !changeValue; break;
-        case 2: currPage = MENU_TARGET_TEMP_A; return;
-        case 3: currPage = MENU_TARGET_TEMP_B; return;
-        case 4: currPage = MENU_ROOT; sets_Save(); return;
-      }
-    }
-    if(passedTime - previousTime > 1.0)
-    {
-      publishMessage();
-      subscribeMessage();
-      previousTime = millis() / 1000.0;
-    }
-  }
-}
-void page_MENU_TARGET_TEMP_A(){
-  initMenuPage(F("TargetTemp_A"), 2);
-  
-  while(true){
-    updateSettings();
-    updateSensorValues();
-    if(updateAllItems){
-      updateDisp2();
-      display1.clearBuffer();
-      if(menuItemPrintable(1,1)){display1.print(F("TargetTemp A    "));}
-      if(menuItemPrintable(1,2)){display1.print(F("Back            "));}
-      printPointer();
-      display1.sendBuffer();
-    }
-    updateAllItems = false;
-    captureButtonDownStates();
-    if(btnOk.PressReleased())
-    {
-      switch (pntrPos)
-        case 2: currPage = MENU_TARGET_TEMP; sets_Save(); return;
-    }
-    doPointerNavigation();
-  }
-}
-void page_MENU_TARGET_TEMP_B(){
-  initMenuPage(F("TargetTemp_B"), 2);
-  
-  while(true){
-    updateSettings();
-    updateSensorValues();
-    if(updateAllItems){
-      updateDisp2();
-      display1.clearBuffer();
-      if(menuItemPrintable(1,1)){display1.print(F("TargetTemp B   "));}
-      if(menuItemPrintable(1,2)){display1.print(F("Back           "));}
-      printPointer();
-      display1.sendBuffer();
-    }
-    updateAllItems = false;
-    captureButtonDownStates();
-    if(btnOk.PressReleased())
-    {
-      switch (pntrPos)
-        case 2: currPage = MENU_TARGET_TEMP; sets_Save(); return;
-    }
-    doPointerNavigation();
-  }
-}
-void page_TEMPERATURES(){//=================================================LIVE_VARIABLES============================================
-  pntrPos = 1;
-  dispOffset = 0;
-  initMenuPage(F("LIVE_VARIABLES"), 4);
-  double passedTime,previousPassedTime = 0;
-
-  while(true){
-    passedTime = millis() / (1000.0);
-
-    if(passedTime - previousPassedTime >= 0.8)
-      updateSettings();
-
-    if(updateAllItems)
-    {
-      previousPassedTime = passedTime;
-      passedTime = 0;
-      updateSensorValues();
-      updateDisp2();
-      display1.clearBuffer();
-      //display1.setTextColor(WHITE, BLACK);
-      if(menuItemPrintable(1,1)){display1.print(F("mashTemp =      "));}
-      if(menuItemPrintable(1,2)){display1.print(F("DC       =      "));}
-      if(menuItemPrintable(1,3)){display1.print(F("eleTemp  =      "));}
-      if(menuItemPrintable(1,4)){display1.print(F("Back            "));}
-      
-      if(menuItemPrintable(11,1)){printDoubleAtWidth(current_mashTemp, 4, 'C', false);}
-      if(menuItemPrintable(11,2)){printDoubleAtWidth(DutyCycle/4096.0 * 100.0, 4, '%', false);}
-      if(menuItemPrintable(11,3)){printDoubleAtWidth(current_thermostatTemp, 4, 'C', false);}
-      printPointer();
-      display1.sendBuffer();
-    }
-    updateAllItems = false;
-    updateItemValue = false;
-    captureButtonDownStates();
-    if(btnOk.PressReleased())
-    {
-      FlashPointer();
-      switch (pntrPos)
-      {
-        case 4: currPage = MENU_ROOT; sets_Save(); return;
-      }
-    }
-    doPointerNavigation();
-    if(passedTime - previousTime > 1.0)
-    {
-      publishMessage();
-      subscribeMessage();
-      previousTime = millis() / 1000.0;
-    }
-  }
-}
-void page_MENU_MISC(){//=================================================MISC==========================================================
-  pntrPos = 1;
-  dispOffset = 0;
-  initMenuPage(F("MISC"), 7);
-  double passedTime,previousPassedTime = 0;
-  bool changeValues [10];
-
-  while(true){
-    
-    passedTime = millis() / (1000.0);
-
-    if(passedTime - previousPassedTime >= 0.8)
-      updateSettings();
-     
-    if(updateAllItems)
-    {
-      previousPassedTime = passedTime;
-      passedTime = 0;
-      updateSensorValues();
-      updateDisp2();
-      display1.clearBuffer();
-      if(menuItemPrintable(1,1)){display1.print(F("POWER        =     "));}
-      if(menuItemPrintable(1,2)){display1.print(F("RawLow       =     "));}
-      if(menuItemPrintable(1,3)){display1.print(F("RawHigh      =     "));}
-      if(menuItemPrintable(1,4)){display1.print(F("max_Ele_temp =     "));}
-      if(menuItemPrintable(1,5)){display1.print(F("marginalTemp =     "));}
-      if(menuItemPrintable(1,6)){display1.print(F("DC_TH        =     "));}
-      if(menuItemPrintable(1,7)){display1.print(F("Back               "));}
-    }
-    if(updateAllItems || updateItemValue)
-    {
-      if(menuItemPrintable(12,1)){printOnOff(settings.power);}
-      if(menuItemPrintable(12,2)){printDoubleAtWidth(settings.RawLow, 6, ' ', false);}
-      if(menuItemPrintable(12,3)){printDoubleAtWidth(settings.RawHigh, 6, ' ', false);}
-      if(menuItemPrintable(12,4)){printUint32_tAtWidth(settings.maxElementTemp, 6, 'C', false);}
-      if(menuItemPrintable(12,5)){printUint32_tAtWidth(settings.marginalTemp, 6, 'C', false);}
-      if(menuItemPrintable(12,6)){printUint32_tAtWidth(settings.dutycycleThreshold, 6, '%', false);}
-      printPointer();
-      display1.sendBuffer();
-    }
-
-    updateAllItems = false;
-    updateItemValue = false;
-    captureButtonDownStates();
-    if(btnOk.PressReleased())
-    {
-      FlashPointer();
-      switch (pntrPos)
-      {
-        case 1: changeValues [0] = !changeValues [0]; break; 
-        case 2: changeValues [1] = !changeValues [1]; break; 
-        case 3: changeValues [2] = !changeValues [2]; break;
-        case 4: changeValues [3] = !changeValues [3]; break; 
-        case 5: changeValues [4] = !changeValues [4]; break;
-        case 7: currPage = MENU_ROOT; sets_Save(); return;
-      }
-    }
-    double amountConstant = 0.01;
-    if(changeValues[0])
-    {
-      *&settings.power = !*&settings.power;
-      changeValues [0] = false;
-      updateItemValue = true; 
-    }
-    else if(changeValues[1])incrementDecrementDouble(&settings.RawLow, 0.05, 0.0, 5.0);
-    else if(changeValues[2])incrementDecrementDouble(&settings.RawHigh, 0.05, 95.0, 105.0);
-    else if(changeValues[3])incrementDecrementDouble(&settings.maxElementTemp, 1, 15, 130);
-    else if(changeValues[4])incrementDecrementDouble(&settings.marginalTemp, 1, 0, 20);
-    else 
-      doPointerNavigation(); 
-
-    PID_elementTemp.SetTunings(settings.Kp_element, settings.Ki_element, 0);
-    PID_elementTemp.SetOutputLimits(0,settings.maxElementTemp - settings.marginalTemp);
-    PID_elementTemp.SetMode(AUTOMATIC);
-    PID_elementTemp.Compute();
-    if(passedTime - previousTime > 1.0)
-    {
-      publishMessage();
-      subscribeMessage();
-      previousTime = millis() / 1000.0;
-    }
-  }
-}
-void page_MENU_PID(){//=================================================PID===============================================================
-  pntrPos = 1;
-  dispOffset = 0;
-  initMenuPage(F("PID"), 6);
-  double passedTime,previousPassedTime = 0;
-  bool changeValues [10]; 
-
-  while(true){
-  passedTime = millis() / (1000.0);
-
-   if(passedTime - previousPassedTime >= 0.8)
-      updateSettings();
-
-    if(updateAllItems)
-    {
-      previousPassedTime = passedTime;
-      passedTime = 0;
-      updateSensorValues();
-      updateDisp2();
-      display1.clearBuffer();
-      if(menuItemPrintable(1,1)){display1.print(F("Kp_mash  =           "));}
-      if(menuItemPrintable(1,2)){display1.print(F("Ki_mash  =           "));}
-      if(menuItemPrintable(1,3)){display1.print(F("Kp_ele   =           "));}
-      if(menuItemPrintable(1,4)){display1.print(F("Ki_ele   =           "));}
-      if(menuItemPrintable(1,5)){display1.print(F("Kp_load  =           "));}
-      if(menuItemPrintable(1,6)){display1.print(F("Back                 "));}
-    }
-
-    if(updateAllItems || updateItemValue)
-    {
-      if(menuItemPrintable(13,1)){printDoubleAtWidth(settings.Kp_mash, 4, ' ', false);}
-      if(menuItemPrintable(13,2)){printDoubleAtWidth(settings.Ki_mash, 4, ' ', false);}
-      if(menuItemPrintable(13,3)){printDoubleAtWidth(settings.Kp_element, 4, ' ', false);}
-      if(menuItemPrintable(13,4)){printDoubleAtWidth(settings.Ki_element, 4, ' ', false);}
-      if(menuItemPrintable(13,5)){printDoubleAtWidth(settings.Kp_load, 4, ' ', false);}
-      //display1.display();
-      printPointer();
-      display1.sendBuffer();
-    }
-
-    updateAllItems = false;
-    updateItemValue = false;
-
-    captureButtonDownStates();
-
-    if(btnOk.PressReleased())
-    {
-      FlashPointer();
-      switch (pntrPos)
-      {
-        case 1: changeValues [0] = !changeValues [0]; break;
-        case 2: changeValues [1] = !changeValues [1]; break;
-        case 3: changeValues [2] = !changeValues [2]; break;
-        case 4: changeValues [3] = !changeValues [3]; break;
-        case 5: changeValues [4] = !changeValues [4]; break;
-        case 6: currPage = MENU_ROOT; sets_Save(); return;
-      }
-    }
-         if(changeValues[0])incrementDecrementDouble(&settings.Kp_mash, 1, 0.0, 1000.0);
-    else if(changeValues[1])incrementDecrementDouble(&settings.Ki_mash, 0.1, 0.0, 200);
-    else if(changeValues[2])incrementDecrementDouble(&settings.Kp_element, 0.1, 0.0, 200.0);
-    else if(changeValues[3])incrementDecrementDouble(&settings.Ki_element, 0.05, 0.0, 200);
-    else if(changeValues[4])incrementDecrementDouble(&settings.Kp_load, 0.1, 1.0, 5.0);
-    else 
-      doPointerNavigation(); 
-
-    PID_mashTemp.SetTunings(settings.Kp_mash, settings.Ki_mash, 0);
-    PID_mashTemp.SetOutputLimits(0,4095.0 * settings.dutycycleThreshold * 0.01);
-    PID_mashTemp.SetMode(AUTOMATIC);
-    PID_mashTemp.Compute();
-
-    PID_elementTemp.SetTunings(settings.Kp_element, settings.Ki_element, 0);
-    PID_elementTemp.SetOutputLimits(0,settings.maxElementTemp - settings.marginalTemp);
-    PID_elementTemp.SetMode(AUTOMATIC);
-    PID_elementTemp.Compute();
-    
-    if(passedTime - previousTime > 1.0)
-    {
-      publishMessage();
-      subscribeMessage();
-      previousTime = millis() / 1000.0;
-    } //Home assistant
-  }
-}
-
-void page_MENU_TIME(){//=================================================MASH_PROGRAM====================================================
-  pntrPos = 1;
-  dispOffset = 0;
-  initMenuPage(F("MashProgram"), 9);
-  double passedTime,previousPassedTime = 0;
-  bool changeValues [10];
-
-  while(true){
-  passedTime = millis() / (1000.0);
-
-  if(passedTime - previousPassedTime >= 0.8)
-      updateSettings();
-
-  if(updateAllItems)
+  printPointer();              
+  if ((updateAllItems || updateItemValue) && shouldUpdate2)
   {
-    previousPassedTime = passedTime;
-    passedTime = 0;
-    updateSensorValues();
-    updateDisp2();
-    display1.clearBuffer();
-    if(menuItemPrintable(1,1)){display1.print(F("Manual =            "));}
-    if(menuItemPrintable(1,2)){display1.print(F("mash:               "));}
-    if(menuItemPrintable(1,3)){display1.print(F("temp_1 =            "));}
-    if(menuItemPrintable(1,4)){display1.print(F("time_1 =            "));}
-    if(menuItemPrintable(1,5)){display1.print(F("temp_2 =            "));}
-    if(menuItemPrintable(1,6)){display1.print(F("time_2 =            "));}
-    if(menuItemPrintable(1,7)){display1.print(F("temp_3 =            "));}
-    if(menuItemPrintable(1,8)){display1.print(F("time_3 =            "));}
-    if(menuItemPrintable(1,9)){display1.print(F("Back                "));}
-  }
+    display1.sendBuffer();                        //välldigt långsam
+    previousPassedTime2 = passedTime;
+    updateAllItems = false;
+    updateItemValue = false;
+  } 
 
-  if(updateAllItems || updateItemValue)
+  //captureButtonDownStates();
+
+  //Homeassistant
+  if(passedTime - previousTime > 1.0) {publishMessage(); previousTime = passedTime;}
+
+  if(edditing) // If edditing is true, save the current cursor position and display offset
+  {   
+    // Save current cursor position and display offset
+    // and set the encoder position to the current cursor position
+    saveCursorPos = encoder.getPosition();
+    saveDispOffset = dispOffset;
+
+    encoder.setAccel(150, 5); //encoder.setAccel(150, 5);
+    // Serial.println(",\tEditing: ");
+  }
+  else // If edditing is false, restore the cursor position and display offset
   {
-    if(menuItemPrintable(11,1)){printOnOff(settings.manualMode);}
-    if(menuItemPrintable(7,2)){printDoubleAtWidth(passedTimeS/60.0, 3, 'm', false);}
-    if(menuItemPrintable(13,2)){printDoubleAtWidth(settings.targetTemp, 10, 'C', false);}
-    if(menuItemPrintable(11,3)){printDoubleAtWidth(settings.temp1, 10, 'C', false);}
-    if(menuItemPrintable(11,4)){printDoubleAtWidth(settings.time1, 10, 'm', false);}
-    if(menuItemPrintable(11,5)){printDoubleAtWidth(settings.temp2, 10, 'C', false);}
-    if(menuItemPrintable(11,6)){printDoubleAtWidth(settings.time2, 10, 'm', false);}
-    if(menuItemPrintable(11,7)){printDoubleAtWidth(settings.temp3, 10, 'C', false);}
-    if(menuItemPrintable(11,8)){printDoubleAtWidth(settings.time3, 10, 'm', false);}
-    printPointer();
-    display1.sendBuffer();
+    // encoder.setPosition(saveCursorPos);
+    // dispOffset = saveDispOffset; 
+
+    //encoder.setAccel(0, 1);
   }
 
-  updateAllItems = false;
-  updateItemValue = false;
+      // === WiFi reconnect ===
+  if (WiFi.status() != WL_CONNECTED) {
+    reconnectWiFi();
+  }
 
-  captureButtonDownStates();
+  // === MQTT reconnect ===
+  if (WiFi.status() == WL_CONNECTED && !client.connected()) {
+    reconnectMQTT();
+  }
+
+  // === MQTT keep-alive ===
+  if (client.connected()) {
+    client.loop();   // måste köras så ofta som möjligt
+  }
+
+  //digitalWrite(ledWifiPin, WiFi.status() == WL_CONNECTED ? LOW : HIGH);
+  //digitalWrite(ledMqttPin, client.connected() ? LOW : HIGH);
+}
+
+void page_MenuRoot()
+{
+  //=================================================ROOT_MENU============================================
+  if(initPage)
+  {
+    cursorPos = root_pntrPos;
+    dispOffset = root_dispOffset;
+    initMenuPage(F("MAIN MENU"), 4);
+    initPage = false;
+  }
+
+  doPointerNavigation();
+
+  if(menuItemPrintable(1,1)){display1.print(F("TARGET TEMP  "));} //kan inte ändra
+  if(menuItemPrintable(1,2)){display1.print(F("MISC         "));} //kan ändra
+  if(menuItemPrintable(1,3)){display1.print(F("PID          "));} //settings, kan ändra
+  if(menuItemPrintable(1,4)){display1.print(F("MashProgram  "));} //settings, kan ändra  
 
   if(btnOk.PressReleased())
   {
     FlashPointer();
-    switch (pntrPos)
+    root_pntrPos = cursorPos;
+    root_dispOffset = dispOffset;
+    initPage = true;
+
+    switch (cursorPos)
     {
-      case 1: changeValues [0] = !changeValues [0]; break;
-      case 3: changeValues [1] = !changeValues [1]; break;
-      case 4: changeValues [2] = !changeValues [2]; break;
-      case 5: changeValues [3] = !changeValues [3]; break;
-      case 6: changeValues [4] = !changeValues [4]; break;
-      case 7: changeValues [5] = !changeValues [5]; break;
-      case 8: changeValues [6] = !changeValues [6]; break;
-      case 9: currPage = MENU_ROOT; sets_Save(); return; 
+      case 0: currPage = MENU_TARGET_TEMP; return;
+      case 1: currPage = MENU_MISC; return;
+      case 2: currPage = MENU_PID; return;
+      case 3: currPage = MENU_TIME; return;
+    }
+  }
+}
+
+void page_MENU_TARGET_TEMP(){//=================================================TARGET_TEMP============================================
+  if(initPage)
+  {
+    cursorPos = 0;
+    dispOffset = 0;
+    initMenuPage(F("TARGET_TEMP"), 2);
+    initPage = false;
+    changeValue = false;
+  }
+
+  if(menuItemPrintable(1,1)){display1.print(F("Target Temp =     "));}
+  if(menuItemPrintable(1,2)){display1.print(F("Back              "));}
+  
+  if(menuItemPrintable(13,1)){printUint32_tAtWidth(settings.targetTemp, 3, 'C');}
+
+  if(btnOk.PressReleased())
+  {
+    FlashPointer();
+    switch (cursorPos)
+    {
+      case 0: changeValue = !changeValue; edditing = !edditing; break;
+      case 1: currPage = MENU_ROOT; sets_Save(); initPage = true; return;
+    }
+  }
+
+  if(changeValue)
+  {
+    incrementDecrementDouble(&settings.targetTemp, 1.0, 15.0, 100.0);
+    settings.targetTemp = round(settings.targetTemp); // ensure integer steps
+  }
+    
+  else 
+    doPointerNavigation(); 
+}
+
+void page_MENU_MISC(){//=================================================MISC==========================================================
+  if(initPage)
+  {
+    cursorPos = 0;
+    dispOffset = 0;
+    initMenuPage(F("MISC"), 7);
+    double passedTime,previousPassedTime = 0;
+    initPage = false;
+    changeValues [10];
+  }
+
+  if(menuItemPrintable(1,1)){display1.print(F("POWER        =     "));}
+  if(menuItemPrintable(1,2)){display1.print(F("RawLow       =     "));}
+  if(menuItemPrintable(1,3)){display1.print(F("RawHigh      =     "));}
+  if(menuItemPrintable(1,4)){display1.print(F("MaxEleTemp   =     "));}
+  if(menuItemPrintable(1,5)){display1.print(F("MarginalTemp =     "));}
+  if(menuItemPrintable(1,6)){display1.print(F("DC TH        =     "));}
+  if(menuItemPrintable(1,7)){display1.print(F("Back               "));}
+  
+  if(menuItemPrintable(12,1)){printOnOff(settings.power);}
+  if(menuItemPrintable(12,2)){printDoubleAtWidth(settings.RawLow, 4, ' ');}
+  if(menuItemPrintable(12,3)){printDoubleAtWidth(settings.RawHigh, 4, ' ');}
+  if(menuItemPrintable(12,4)){printUint32_tAtWidth(settings.maxElementTemp, 4, 'C');}
+  if(menuItemPrintable(12,5)){printUint32_tAtWidth(settings.marginalTemp, 4, 'C');}
+  if(menuItemPrintable(12,6)){printUint32_tAtWidth(settings.dutycycleThreshold, 4, '%');}
+
+  if(btnOk.PressReleased())
+  {
+    FlashPointer();
+    switch (cursorPos)
+    {
+      case 0: changeValues [0] = !changeValues [0]; edditing = !edditing; break; 
+      case 1: changeValues [1] = !changeValues [1]; edditing = !edditing; break; 
+      case 2: changeValues [2] = !changeValues [2]; edditing = !edditing; break;
+      case 3: changeValues [3] = !changeValues [3]; edditing = !edditing; break; 
+      case 4: changeValues [4] = !changeValues [4]; edditing = !edditing; break;
+      case 6: currPage = MENU_ROOT; sets_Save(); initPage = true; return;
+    }
+  }
+
+  if(changeValues[0])
+  {
+    *&settings.power = !*&settings.power;
+    changeValues [0] = false;
+    updateItemValue = true; 
+  }
+  else if(changeValues[1])incrementDecrementDouble(&settings.RawLow, 0.05, 0.0, 5.0);
+  else if(changeValues[2])incrementDecrementDouble(&settings.RawHigh, 0.05, 95.0, 105.0);
+  else if(changeValues[3]){incrementDecrementDouble(&settings.maxElementTemp, 1, 15, 130); settings.maxElementTemp = round(settings.maxElementTemp);}
+  else if(changeValues[4]){incrementDecrementDouble(&settings.marginalTemp, 1, 0, 20); settings.marginalTemp = round(settings.marginalTemp);}
+  else 
+    doPointerNavigation(); 
+
+  PID_elementTemp.SetTunings(settings.Kp_element, settings.Ki_element, 0);
+  PID_elementTemp.SetOutputLimits(0,settings.maxElementTemp - settings.marginalTemp);
+  PID_elementTemp.SetMode(AUTOMATIC);
+  PID_elementTemp.Compute();
+}
+
+void page_MENU_PID(){//=================================================PID===============================================================
+  if(initPage)
+  { 
+    cursorPos = 0;
+    dispOffset = 0;
+    initMenuPage(F("PID"), 6);
+    initPage = false;
+    changeValues [10];
+  }
+
+  if(menuItemPrintable(1,1)){display1.print(F("Kp Mash  =           "));}
+  if(menuItemPrintable(1,2)){display1.print(F("Ki Mash  =           "));}
+  if(menuItemPrintable(1,3)){display1.print(F("Kp Ele   =           "));}
+  if(menuItemPrintable(1,4)){display1.print(F("Ki Ele   =           "));}
+  if(menuItemPrintable(1,5)){display1.print(F("Kp Load  =           "));}
+  if(menuItemPrintable(1,6)){display1.print(F("Back                 "));}
+
+  if(menuItemPrintable(12,1)){printUint32_tAtWidth(settings.Kp_mash, 4, ' ');}
+  if(menuItemPrintable(12,2)){printDoubleAtWidth(settings.Ki_mash, 4, ' ');}
+  if(menuItemPrintable(12,3)){printDoubleAtWidth(settings.Kp_element, 4, ' ');}
+  if(menuItemPrintable(12,4)){printDoubleAtWidth(settings.Ki_element, 4, ' ');}
+  if(menuItemPrintable(12,5)){printDoubleAtWidth(settings.Kp_load, 4, ' ');}
+
+  if(btnOk.PressReleased())
+  {
+    FlashPointer();
+    switch (cursorPos)
+    {
+      case 0: changeValues [0] = !changeValues [0]; edditing = !edditing; break;
+      case 1: changeValues [1] = !changeValues [1]; edditing = !edditing; break;
+      case 2: changeValues [2] = !changeValues [2]; edditing = !edditing; break;
+      case 3: changeValues [3] = !changeValues [3]; edditing = !edditing; break;
+      case 4: changeValues [4] = !changeValues [4]; edditing = !edditing; break;
+      case 5: currPage = MENU_ROOT; sets_Save(); initPage = true; return;
+    }
+  }
+        if(changeValues[0]){incrementDecrementDouble(&settings.Kp_mash, 1, 0.0, 200.0); settings.Kp_mash = round(settings.Kp_mash);}
+  else if(changeValues[1])incrementDecrementDouble(&settings.Ki_mash, 0.1, 0.0, 100.0);
+  else if(changeValues[2])incrementDecrementDouble(&settings.Kp_element, 0.1, 0.0, 50.0);
+  else if(changeValues[3])incrementDecrementDouble(&settings.Ki_element, 0.05, 0.0, 25.0);
+  else if(changeValues[4])incrementDecrementDouble(&settings.Kp_load, 0.1, 1.0, 5.0);
+  else 
+    doPointerNavigation(); 
+
+  PID_mashTemp.SetTunings(settings.Kp_mash, settings.Ki_mash, 0);
+  PID_mashTemp.SetOutputLimits(0,4095.0 * settings.dutycycleThreshold * 0.01);
+  PID_mashTemp.SetMode(AUTOMATIC);
+  PID_mashTemp.Compute();
+
+  PID_elementTemp.SetTunings(settings.Kp_element, settings.Ki_element, 0);
+  PID_elementTemp.SetOutputLimits(0,settings.maxElementTemp - settings.marginalTemp);
+  PID_elementTemp.SetMode(AUTOMATIC);
+  PID_elementTemp.Compute();
+  
+}
+
+void page_MENU_TIME(){//=================================================MASH_PROGRAM====================================================
+  if(initPage)
+  { 
+    cursorPos = 0;
+    dispOffset = 0;
+    initMenuPage(F("MashProgram"), 9);
+    initPage = false;
+    changeValues [10];
+  }
+ 
+  if(menuItemPrintable(1,1)){display1.print(F("Manual =            "));}
+  if(menuItemPrintable(1,2)){display1.print(F("Mash:               "));}
+  if(menuItemPrintable(1,3)){display1.print(F("Temp 1 =            "));}
+  if(menuItemPrintable(1,4)){display1.print(F("Time 1 =            "));}
+  if(menuItemPrintable(1,5)){display1.print(F("Temp 2 =            "));}
+  if(menuItemPrintable(1,6)){display1.print(F("Time 2 =            "));}
+  if(menuItemPrintable(1,7)){display1.print(F("Temp 3 =            "));}
+  if(menuItemPrintable(1,8)){display1.print(F("Time 3 =            "));}
+  if(menuItemPrintable(1,9)){display1.print(F("Back                "));}
+  
+  if(menuItemPrintable(11,1)){printOnOff(settings.manualMode);}
+  if(menuItemPrintable(7,2)){printDoubleAtWidth(passedTimeS/60.0, 3, 'm');}
+  if(menuItemPrintable(13,2)){printUint32_tAtWidth(settings.targetTemp, 10, 'C');}
+  if(menuItemPrintable(11,3)){printUint32_tAtWidth(settings.temp1, 10, 'C');}
+  if(menuItemPrintable(11,4)){printUint32_tAtWidth(settings.time1, 10, 'm');}
+  if(menuItemPrintable(11,5)){printUint32_tAtWidth(settings.temp2, 10, 'C');}
+  if(menuItemPrintable(11,6)){printUint32_tAtWidth(settings.time2, 10, 'm');}
+  if(menuItemPrintable(11,7)){printUint32_tAtWidth(settings.temp3, 10, 'C');}
+  if(menuItemPrintable(11,8)){printUint32_tAtWidth(settings.time3, 10, 'm');}
+
+  if(btnOk.PressReleased())
+  {
+    FlashPointer();
+    switch (cursorPos)
+    {
+      case 0: changeValues [0] = !changeValues [0]; edditing = !edditing; break;
+      case 2: changeValues [1] = !changeValues [1]; edditing = !edditing; break;
+      case 3: changeValues [2] = !changeValues [2]; edditing = !edditing; break;
+      case 4: changeValues [3] = !changeValues [3]; edditing = !edditing; break;
+      case 5: changeValues [4] = !changeValues [4]; edditing = !edditing; break;
+      case 6: changeValues [5] = !changeValues [5]; edditing = !edditing; break;
+      case 7: changeValues [6] = !changeValues [6]; edditing = !edditing; break;
+      case 8: currPage = MENU_ROOT; sets_Save(); initPage = true; return; 
     }
   }
 
@@ -736,21 +610,15 @@ void page_MENU_TIME(){//=================================================MASH_PR
     changeValues [0] = false;
     updateItemValue = true; 
   } 
-  else if(changeValues[1])incrementDecrementDouble(&settings.temp1, 1.0, 15.0, 100.0);
-  else if(changeValues[2])incrementDecrementDouble(&settings.time1, 1.0, 0.0, 90.0);
-  else if(changeValues[3])incrementDecrementDouble(&settings.temp2, 1.0, 15.0, 100.0);
-  else if(changeValues[4])incrementDecrementDouble(&settings.time2, 1.0, 0.0, 90.0);
-  else if(changeValues[5])incrementDecrementDouble(&settings.temp3, 1.0, 15.0, 100.0);
-  else if(changeValues[6])incrementDecrementDouble(&settings.time3, 1.0, 0.0, 90.0);
+  else if(changeValues[1]){incrementDecrementDouble(&settings.temp1, 1.0, 15.0, 100.0); settings.temp1 = round(settings.temp1);}
+  else if(changeValues[2]){incrementDecrementDouble(&settings.time1, 1.0, 0.0, 90.0); settings.time1 = round(settings.time1);}
+  else if(changeValues[3]){incrementDecrementDouble(&settings.temp2, 1.0, 15.0, 100.0); settings.temp2 = round(settings.temp2);}
+  else if(changeValues[4]){incrementDecrementDouble(&settings.time2, 1.0, 0.0, 90.0); settings.time2 = round(settings.time2);}
+  else if(changeValues[5]){incrementDecrementDouble(&settings.temp3, 1.0, 15.0, 100.0); settings.temp3 = round(settings.temp3);}
+  else if(changeValues[6]){incrementDecrementDouble(&settings.time3, 1.0, 0.0, 90.0); settings.time3 = round(settings.time3);}
   else 
     doPointerNavigation();
-  if(passedTime - previousTime > 1.0)
-    {
-      publishMessage();
-      subscribeMessage();
-      previousTime = millis() / 1000.0;
-    }
-  }
+  
 }
 
 //======================================================TOOLS - menu Internals==================================================
@@ -766,79 +634,109 @@ void initMenuPage(String title, uint8_t itemCount){
   flashCntr = 0;
   flashIsOn = false;
   updateAllItems = true;
-  loopStartMs = millis();
 }
 void captureButtonDownStates(){
   btnOk.CaptureDownState();
 }
 
-void doPointerNavigation(){
-  currentTime = millis();
-  //Serial.print("pntrPos - dispOffset: ");
-  //Serial.println(pntrPos - dispOffset );
-  if (currentTime >= (loopTime + 1) ) {
-    aState = digitalRead(outputA); 
-   bState = digitalRead(outputB);
-  if (aState > aLastState)
+void doPointerNavigation() 
+{
+  int direction = round(encoder.getRPM());
+
+  if(!edditing)
   {
-    if (bState != aState){  
-        if(pntrPos > 1)
-        {
-          flashIsOn = false; flashCntr = 0; 
-          if(pntrPos - dispOffset == 1){updateAllItems = true; dispOffset--;}
-          pntrPos--;
-          printPointer();
-          //Serial.print("Up: ");Serial.println(pntrPos);
-          //Serial.println("pntrPos - dispOffset ");
-          //Serial.println(pntrPos - dispOffset );
-        }
-        counter ++;
-      } 
-    else{
-        if(pntrPos < itemCnt)
-        {
-          flashIsOn = false; flashCntr = 0; 
-          if(pntrPos - dispOffset == DISP_ITEM_ROWS){updateAllItems = true; dispOffset++;}
-          pntrPos++;
-          printPointer();
-          //Serial.print("Down: ");Serial.println(pntrPos);
-          //Serial.println("pntrPos - dispOffset ");
-          //Serial.println(pntrPos - dispOffset );
-        }
-        counter --;
-    }
-   }
-   aLastState = aState; 
-   loopTime = currentTime;
+    direction = constrain(direction, -1, 1);
   }
-  
+
+  if (direction != 0) {
+    int newCursorPos = cursorPos + direction;
+
+    // Clamp
+    if (newCursorPos < 0) newCursorPos = 0;
+    if (newCursorPos > itemCnt - 1) newCursorPos = itemCnt - 1;
+
+    if (newCursorPos != cursorPos) {
+      cursorPos = newCursorPos;
+
+      // Scroll logic
+      if (cursorPos < dispOffset) {
+        dispOffset = cursorPos;
+        updateAllItems = true; // Force update of all items
+      } else if (cursorPos >= dispOffset + DISP_ITEM_ROWS) {
+        dispOffset = cursorPos - DISP_ITEM_ROWS + 1;
+        updateAllItems = true; // Force update of all items
+      }
+
+      printPointer();  // Only redraw when view actually changes
+      timeLastTouched = millis(); // Update last touched time
+    }
+    
+    // Serial.print("Direction: ");
+    // Serial.print(direction);
+    // Serial.print(",\t\tNew Cursor Position: ");
+    // Serial.print(newCursorPos);
+    // Serial.print(",\t\tDisplay Offset: ");
+    // Serial.println(dispOffset);
+  }
+  delayMicroseconds(5); //behövs för stabiliteten av doPointerNavigation
 }
 
 void incrementDecrementDouble(double *v, double amount, double min, double max)
 {
-  int enc = encoder.readEncoder();
-  if(enc != 0) {
-    *v += (enc*amount);
-    *v = constrain(*v,min,max);
-    //Serial.println(enc*amount);
-    updateItemValue = true;
-  } 
-  delayMicroseconds(5);
+  double direction = encoder.getRPM();
+
+    if (direction != 0) {
+        double target = direction * amount;
+        double newValue = *v + target;
+
+        if (newValue >= min && newValue <= max) 
+          *v = newValue;
+        else if (newValue < min) 
+          *v = min;
+        else 
+          *v = max;
+
+        updateItemValue = true;
+        timeLastTouched = millis();
+    }
+    delayMicroseconds(5); //behövs för stabiliteten av incrementDecrementDouble
+}
+
+void incrementDecrementInt(uint16_t *v, uint16_t amount, uint16_t min, uint16_t max)
+{
+    int direction = encoder.getRPM();
+
+    if (direction != 0) {
+        int target = direction * amount;
+        int newValue = *v + target;
+
+        if (newValue >= min && newValue <= max) {
+            *v = newValue;
+        }
+        else if (newValue < min) {
+            *v = min;
+        }
+        else {
+            *v = max;
+        }
+
+        updateItemValue = true;
+        timeLastTouched = millis();
+    }
+    delayMicroseconds(5);
 }
 
 bool isFlashChanged(){
   if(flashCntr == 0){
     flashIsOn = !flashIsOn;
-
     flashCntr = FLASH_RST_CNT;
-
     return true;
   }
   else{flashCntr--; return false;}
 }
 
 bool menuItemPrintable(uint8_t xPos, uint8_t yPos){
-  if(!(updateAllItems || (updateItemValue && pntrPos == yPos))){return false;}
+  if(!(updateAllItems || (updateItemValue && cursorPos == yPos))){return false;}
   uint8_t yMaxOffset = 0;
   if(yPos > DISP_ITEM_ROWS) {yMaxOffset = yPos - DISP_ITEM_ROWS;}
   if(dispOffset <= (yPos) && dispOffset >= yMaxOffset){display1.setCursor(CHAR_X*xPos, CHAR_Y*(yPos - dispOffset)); return true;}
@@ -846,7 +744,7 @@ bool menuItemPrintable(uint8_t xPos, uint8_t yPos){
 }
 
 bool menuItemPrintableDisp2(uint8_t xPos, uint8_t yPos){ 
-  if(!(updateAllItems || (updateItemValue && pntrPos == yPos))){return false;}
+  if(!(updateAllItems || (updateItemValue && cursorPos == yPos))){return false;}
   uint8_t yMaxOffset = 0;
   if(yPos > DISP_ITEM_ROWS) {yMaxOffset = yPos - DISP_ITEM_ROWS;}
   if(0 <= (yPos) && 0 >= yMaxOffset){display2.setCursor(CHAR_X*xPos, CHAR_Y*(yPos)); return true;}
@@ -860,7 +758,7 @@ void printPointer(){
   display1.drawStr(0, 2*CHAR_Y, " ");
   display1.drawStr(0, 3*CHAR_Y, " ");
   display1.drawStr(0, 4*CHAR_Y, " ");
-  display1.drawStr(0, (pntrPos - dispOffset)*CHAR_Y, "*");
+  display1.drawStr(0, (cursorPos - dispOffset + 1)*CHAR_Y, "*");
   display1.sendBuffer();
 }
 void FlashPointer(){
@@ -872,7 +770,7 @@ void FlashPointer(){
 
   delay(50);
   //Serial.println("FlashPointer");
-  display1.drawStr(0, (pntrPos - dispOffset)*CHAR_Y, "*");
+  display1.drawStr(0, (cursorPos - dispOffset + 1)*CHAR_Y, "*");
   display1.sendBuffer();
 }
 
@@ -900,22 +798,16 @@ uint8_t getDoubleCharCnt(double value)
   while (tensCalc <= value && cnt < 20){tensCalc *= 10; cnt += 1;}
   return cnt;
 }
-void printUint32_tAtWidth(uint32_t value, uint8_t width, char c, boolean isRight){
-
-  uint8_t numChars = getUint32_tCharCnt(value);
-  if(isRight){printChars(width-numChars, ' ');}
+void printUint32_tAtWidth(uint32_t value, uint8_t width, char c){
   display1.print(value);
   display1.print(c);
-  if(!isRight){printChars(width-numChars, ' ');}
+  printChars(width-getUint32_tCharCnt(value), ' ');
 }
-void printDoubleAtWidth(double value, uint8_t width, char c, boolean isRight){
-
-  uint8_t numChars = getDoubleCharCnt(value);
-  if(isRight){printChars(width-numChars, ' ');}
-  display1.print(value);
-  //display1.print(" ");
+void printDoubleAtWidth(double value, uint8_t width, char c){
+  char buf[10];
+  dtostrf(value, width-getDoubleCharCnt(value), 1, buf); // 1 decimal
+  display1.print(buf);
   display1.print(c);
-  if(!isRight){printChars(width-numChars, ' ');}
 }
 //======================================================DISPLAY_2======================================================
 void printCharsDisplay2(uint8_t cnt, char c){
@@ -924,22 +816,16 @@ void printCharsDisplay2(uint8_t cnt, char c){
     for(u_int8_t i = 1; i < cnt; i++){display2.print(cc);}
   }
 }
-void printUint32_tAtWidthDisplay2(uint32_t value, uint8_t width, char c, boolean isRight){
-
-  uint8_t numChars = getUint32_tCharCnt(value);
-  if(isRight){printCharsDisplay2(width-numChars, ' ');}
+void printUint32_tAtWidthDisplay2(uint32_t value, uint8_t width, char c){
   display2.print(value);
   display2.print(c);
-  if(!isRight){printCharsDisplay2(width-numChars, ' ');}
+  printCharsDisplay2(width-getUint32_tCharCnt(value), ' ');
 }
-void printDoubleAtWidthDisplay2(double value, uint8_t width, char c, boolean isRight){
-
-  uint8_t numChars = getDoubleCharCnt(value);
-  if(isRight){printCharsDisplay2(width-numChars, ' ');}
-  display2.print(value);
-  //display1.print(" ");
+void printDoubleAtWidthDisplay2(double value, uint8_t width, char c){
+  char buf[10];
+  dtostrf(value, width-getDoubleCharCnt(value), 1, buf); // 1 decimal
+  display2.print(buf);
   display2.print(c);
-  if(!isRight){printCharsDisplay2(width-numChars, ' ');}
 }
 
 //======================================================TOOLS_settings======================================================
@@ -956,8 +842,11 @@ void sets_Load()
 }
 void sets_Save()
 {
-  EEPROM.put(0, settings);
-  EEPROM.commit();
+  if (memcmp(&settings, &oldSettings, sizeof(settings)) != 0) {
+    EEPROM.put(0, settings);
+    EEPROM.commit();
+    oldSettings = settings; // uppdatera efter commit
+  }
 }
 void updateSettings()
 {
@@ -994,17 +883,18 @@ void updateSettings()
       passedTimeS = 0;
     }
   
-    //Serial.print("PID_mashTemp.Compute(): ");
-    //Serial.println(PID_mashTemp.Compute());
-    //Serial.println(settings.Kp_mash);
-    //Serial.println(PID_mashTemp.GetKp());
+    // Serial.print("PID_mashTemp.Compute(): ");
+    // Serial.println(PID_mashTemp.Compute());
+    // Serial.println(settings.Kp_mash);
+    // Serial.println(PID_mashTemp.GetKp());
+
     updateAllItems = PID_mashTemp.Compute() || PID_elementTemp.Compute();
+    updateAllItems = true;                                                        //nytt
     previousDutyCycle = DutyCycle;
     DutyCycle = Output_mashTemp;  
     DutyCycle *= (1 + (loadCompensation / 60.0 ) * (settings.Kp_load - 1)); //(settings.Kp_load + loadCompensation)/settings.Kp_load;
     DutyCycle = constrain(DutyCycle, 0, 4096.0 * settings.dutycycleThreshold * 0.01); 
     ledcWrite(ledChannel, DutyCycle); 
-
     
     settings.dutycycleThreshold = Output_elementTemp; 
     //Serial.println(settings.dutycycleThreshold);
@@ -1013,13 +903,13 @@ void updateSettings()
     targetElementTemp = settings.maxElementTemp - settings.marginalTemp;
 
     client.loop();
-    if(TopicArrived)
-    {
-      Serial.print("Message arrived: ");
-      Serial.println(mqttpayload);
-      //settings.targetTemp = atof(mqttpayload);
-      TopicArrived = false;
-    }
+    // if(TopicArrived)
+    // {
+    //   Serial.print("Message arrived: ");
+    //   Serial.println(mqttpayload);
+    //   //settings.targetTemp = atof(mqttpayload);
+    //   TopicArrived = false;
+    // }
   }
   else
   {
@@ -1059,14 +949,17 @@ void updateSensorValues()                        // långsamast i hela programet
 void updateDisp2()
 {
   display2.clearBuffer();
-  if(menuItemPrintableDisp2(1,1)){display2.print(F("mashTemp =      "));}
-  if(menuItemPrintableDisp2(1,2)){display2.print(F("DC       =      "));}
-  if(menuItemPrintableDisp2(1,3)){display2.print(F("eleTemp  =      "));}
+  if(menuItemPrintableDisp2(1,1)){display2.print(F("TargetTemp =      "));}
+  if(menuItemPrintableDisp2(1,2)){display2.print(F("MashTemp   =      "));}
+  if(menuItemPrintableDisp2(1,3)){display2.print(F("DC         =      "));}
+  if(menuItemPrintableDisp2(1,4)){display2.print(F("EleTemp    =      "));}
 
-  if(menuItemPrintableDisp2(11,1)){printDoubleAtWidthDisplay2(current_mashTemp, 4, 'C', false);}
-  if(menuItemPrintableDisp2(11,2)){printDoubleAtWidthDisplay2(DutyCycle/4096.0 * 100.0, 4, '%', false);}
-  if(menuItemPrintableDisp2(11,3)){printDoubleAtWidthDisplay2(current_thermostatTemp, 4, 'C', false);}
+  if(menuItemPrintableDisp2(11,1)){printDoubleAtWidthDisplay2(settings.targetTemp, 3, 'C');}  
+  if(menuItemPrintableDisp2(11,2)){printDoubleAtWidthDisplay2(current_mashTemp, 3, 'C');}
+  if(menuItemPrintableDisp2(11,3)){printDoubleAtWidthDisplay2(DutyCycle/4096.0 * 100.0, 3, '%');}
+  if(menuItemPrintableDisp2(11,4)){printDoubleAtWidthDisplay2(current_thermostatTemp, 3, 'C');}
   display2.sendBuffer();
+  display2.clearBuffer(); 
 }
 
 double Pid(double error, float kp, float ki, float kd)
@@ -1082,52 +975,72 @@ double Pid(double error, float kp, float ki, float kd)
 void setupWiFi() //Homeassistant
 {
   WiFi.begin(privates.ssid, privates.pass);
-/*Serial.print("\nConeccting to ");
+  Serial.print("\nConnecting to ");
   Serial.print(privates.ssid);
+
   while(WiFi.status() != WL_CONNECTED)
   {
     delay(100);
     Serial.print(".");
   }
   Serial.print("\nConnected to ");
-  Serial.println(privates.ssid);*/
+  Serial.println(privates.ssid);
 }
-void reconnect() //Homeassistant
+void setupMQTT() //Homeassistant
 {
-  //Serial.print("\nConnecting to ");
-  //Serial.println(privates.broker);
-  if(client.connect("boll", privates.brokerUser, privates.brokerPass))
+  client.setServer(privates.broker, 1883);
+  client.setCallback(callback);
+  client.connect("MashMachine", privates.brokerUser, privates.brokerPass);
+  while (!client.connected())
   {
-    //Serial.print("\nConnected to ");
-    //Serial.println(privates.broker);
+    delay(100);
+    Serial.print(".");
   }
-  else
-  {
-    //Serial.println("\nTrying connect again");
+  Serial.println("MQTT setup complete");
+}
+void reconnectWiFi()  //Homeassistant
+{
+  static unsigned long lastAttempt = 0;
+  if (millis() - lastAttempt > 5000) { // försök var 5:e sekund
+    lastAttempt = millis();
+    WiFi.begin(privates.ssid, privates.pass);
+    Serial.println("Trying to reconnect WiFi...");
   }
 }
-
+void reconnectMQTT()  //Homeassistant
+{
+  static unsigned long lastAttempt = 0;
+  if (millis() - lastAttempt > 3000) { // försök var 3:e sekund
+    lastAttempt = millis();
+    Serial.println("Trying to reconnect MQTT...");
+    if (client.connect("MashMachine", privates.brokerUser, privates.brokerPass)) {
+      Serial.println("MQTT connected!");
+      // subscribe till topics här
+    }
+  }
+}
 void publishMessage() //Homeassistant
 {
-    if(!client.connected()){reconnect();}
-    client.loop();
-    snprintf(messages, 5, "%f", current_mashTemp);
-    client.publish(privates.topicMashTemp, messages);
-    snprintf(messages, 5, "%f", current_thermostatTemp);
-    client.publish(privates.topicElementTemp, messages);
-    snprintf(messages, 5, "%f", passedTimeS/60.0);
-    client.publish(privates.topicTimePassed, messages);
-    snprintf(messages, 5, "%f", settings.targetTemp);
-    client.publish(privates.topicTargetTemp, messages);
-    snprintf(messages, 5, "%f", DutyCycle/4096.0 * 100.0);
-    client.publish(privates.topicDutyCycle, messages);
+  publishFloat(privates.topicMashTemp, current_mashTemp);
+  publishFloat(privates.topicElementTemp, current_thermostatTemp);
+  publishFloat(privates.topicTimePassed, passedTimeS/60.0);
+  publishFloat(privates.topicTargetTemp, settings.targetTemp);
+  publishFloat(privates.topicDutyCycle, DutyCycle/4096.0 * 100.0);
 }
-
+void publishFloat(const char* topic, float value) {
+  //int "%d", float "%f", bool "%s", obs vikitgt!
+  snprintf(messages, sizeof(messages), "%.1f", value); // 2 decimal places
+  client.publish(topic, messages);
+}
+void publishString(const char* topic, String value) {
+  snprintf(messages, sizeof(messages), "%s", value);
+  client.publish(topic, messages);
+}
 void subscribeMessage() //Homeassistant
 {
-    if(!client.connected()){reconnect();}
-    client.loop();
-    client.subscribe(privates.topicTargetTemp); 
+    // if(!client.connected()){reconnectMQTT();}
+    // client.loop();
+    // client.subscribe(privates.topicTargetTemp); 
 }
 
 void callback(char* topic, byte* payload, unsigned int length) //Homeassistant
