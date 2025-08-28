@@ -63,19 +63,17 @@ int  RotaryEncoderAccel::getPosition() {
 void RotaryEncoderAccel::calculateDirection()
 {
   if (_positionExtPrev > _positionExt) { 
-    _positionExtPrev = _positionExt;
     _direction = Direction::COUNTERCLOCKWISE;
-   
   }  
   else if (_positionExtPrev < _positionExt) {  
-     _positionExtPrev = _positionExt;
     _direction = Direction::CLOCKWISE;
   } 
   else{
-    _positionExtPrev = _positionExt;
-     _direction = Direction::NOROTATION;
+    _direction = Direction::NOROTATION;
   }
+ 
 }
+
 RotaryEncoderAccel::Direction RotaryEncoderAccel::getDirection()
 {
   return _direction;
@@ -99,18 +97,8 @@ void RotaryEncoderAccel::tick(void)
     int oldPositionExt = _positionExt;
     _position += KNOBDIR[thisState | (_oldState<<2)];
 
-    if (thisState == LATCHSTATE) {
-      detectRotation = true;
-      if (accel > 0) {
-        unsigned long actualTick = millis();
-        unsigned long delta = actualTick - prevTick;
-        if (delta != 0 && delta < accel) {
-          unsigned long increment = (accel / delta - 1) * KNOBDIR[thisState | (_oldState << 2)];
-          _position += increment * multipleter;
-        }
-        prevTick = actualTick;
-      }
-
+    if (thisState == LATCHSTATE) 
+    {
       _positionExt = _position >> 2;
       // Only update time if position actually changed
       if (_positionExt != oldPositionExt) {
@@ -142,17 +130,19 @@ float RotaryEncoderAccel::getRPM()
   unsigned long timeToLastPosition = millis() - _positionExtTime;
   unsigned long t = max(timeBetweenLastPositions, timeToLastPosition);
   float rpm; 
+  
   calculateDirection();
+ 
   if(_direction != Direction::NOROTATION)
-  {
-  // Serial.print("Direction: ");
-  // Serial.print((int)_direction);
-  // Serial.print(",\t\tTime: ");
-  // Serial.print(_positionExtTime);
-  // Serial.print(",\tTimePrev: ");
-  // Serial.print(_positionExtTimePrev);
-  // Serial.print(",\tt: ");
-  // Serial.println(t);
+  { 
+    // Serial.print("\tposPrev: ");
+    // Serial.print(_positionExtPrev);
+    // Serial.print(",\tposExt: ");
+    // Serial.print(_positionExt);
+    // Serial.print(",\tDir: ");
+    // Serial.println((int)_direction);
+
+    _positionExtPrev = _positionExt;
     
     switch (_direction) {
       case Direction::CLOCKWISE:

@@ -645,7 +645,7 @@ void doPointerNavigation()
 
   if(!edditing)
   {
-    direction = constrain(direction, -1, 1);
+    direction = constrain(direction, -(itemCnt - 1), itemCnt - 1);
   }
 
   if (direction != 0) {
@@ -695,7 +695,8 @@ void incrementDecrementDouble(double *v, double amount, double min, double max)
           *v = min;
         else 
           *v = max;
-
+        // Serial.print(", newValue: ");
+        // Serial.print(*v);
         updateItemValue = true;
         timeLastTouched = millis();
     }
@@ -719,7 +720,7 @@ void incrementDecrementInt(uint16_t *v, uint16_t amount, uint16_t min, uint16_t 
         else {
             *v = max;
         }
-
+       
         updateItemValue = true;
         timeLastTouched = millis();
     }
@@ -1021,15 +1022,20 @@ void reconnectMQTT()  //Homeassistant
 }
 void publishMessage() //Homeassistant
 {
-  publishFloat(privates.topicMashTemp, current_mashTemp);
-  publishFloat(privates.topicElementTemp, current_thermostatTemp);
+  publishInt(privates.topicMashTemp, current_mashTemp);
+  publishInt(privates.topicElementTemp, current_thermostatTemp);
   publishFloat(privates.topicTimePassed, passedTimeS/60.0);
-  publishFloat(privates.topicTargetTemp, settings.targetTemp);
+  publishInt(privates.topicTargetTemp, settings.targetTemp);
   publishFloat(privates.topicDutyCycle, DutyCycle/4096.0 * 100.0);
 }
 void publishFloat(const char* topic, float value) {
   //int "%d", float "%f", bool "%s", obs vikitgt!
   snprintf(messages, sizeof(messages), "%.1f", value); // 2 decimal places
+  client.publish(topic, messages);
+}
+void publishInt(const char* topic, int value) {
+  //int "%d", float "%f", bool "%s", obs vikitgt!
+  snprintf(messages, sizeof(messages), "%d", value);
   client.publish(topic, messages);
 }
 void publishString(const char* topic, String value) {
