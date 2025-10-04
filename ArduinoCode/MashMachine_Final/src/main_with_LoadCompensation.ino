@@ -119,13 +119,13 @@ void printDoubleAtWidth(double value, uint8_t width, char c);
 //Settings
 #pragma pack(1) //memory alignment
 struct Mysettings{
-  double Kp_mash = 125.0;
-  double Ki_mash = 0.0;
+  double Kp_lautering = 125.0;
+  double Ki_lautering = 0.0;
   double Kp_element = 125.0/32;
   double Ki_element = 0.0;
-  double Kp_load = 1.0;
+  double K_heatLoss = 1.0;
 
-  double targetTemp = 25;
+  double targetTemp = 78;
 
   boolean manualMode = 1;
   double temp1 = 65;
@@ -171,8 +171,8 @@ DallasTemperature sensor2(&oneWire2);
 OneWire oneWire3(oneWireBus3pin);
 DallasTemperature sensor3(&oneWire3);
 
-double current_mashTemp;
-double previous_mashTemp;
+double current_lauteringTemp;
+double previous_lauteringTemp;
 double current_thermostatTemp;
 double previous_thermostatTemp;
 double current_airTemp;
@@ -190,13 +190,13 @@ double error;
 double previousError;
 double dt, last_time;
 double integral, previous, pid = 0;
-double Output_mashTemp;
+double Output_lauteringTemp;
 double Output_elementTemp;
 double tempC;
 double DutyCycle = 0;
 double previousDutyCycle = 0;
 double targetElementTemp = settings.maxElementTemp - settings.marginalTemp;
-PID PID_mashTemp(&current_mashTemp, &Output_mashTemp, &settings.targetTemp, settings.Kp_mash, settings.Ki_mash, 0, DIRECT);
+PID PID_lauteringTemp(&current_lauteringTemp, &Output_lauteringTemp, &settings.targetTemp, settings.Kp_lautering, settings.Ki_lautering, 0, DIRECT);
 PID PID_elementTemp(&current_thermostatTemp, &Output_elementTemp, &targetElementTemp, settings.Kp_element, settings.Ki_element, 0, DIRECT);
 //-----------------------------------------------------------------------
 // setting PWM properties
@@ -211,7 +211,7 @@ const int resolution = 12;
 U8G2_SH1106_128X64_NONAME_F_HW_I2C display1(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
 U8G2_SH1106_128X64_NONAME_F_HW_I2C display2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
 long timeLastTouched = 0;
-const long timeBeforeDisable = 120000;
+const long timeBeforeDisable = 60000 * 5;
 //-----------------------------------------------------------------------
 
 
@@ -267,10 +267,10 @@ void setup() {
   EEPROM.begin(sizeof(settings));
   sets_Load();
   
-  PID_mashTemp.SetTunings(settings.Kp_mash, settings.Ki_mash, 0);
-  PID_mashTemp.SetOutputLimits(0,4095.0 * settings.dutycycleThreshold * 0.01);
-  PID_mashTemp.SetMode(AUTOMATIC);  
-  PID_mashTemp.Compute();
+  PID_lauteringTemp.SetTunings(settings.Kp_lautering, settings.Ki_lautering, 0);
+  PID_lauteringTemp.SetOutputLimits(0,4095.0 * settings.dutycycleThreshold * 0.01);
+  PID_lauteringTemp.SetMode(AUTOMATIC);  
+  PID_lauteringTemp.Compute();
 
   PID_elementTemp.SetTunings(settings.Kp_element, settings.Ki_element, 0);
   PID_elementTemp.SetOutputLimits(0,settings.maxElementTemp - settings.marginalTemp);
@@ -502,28 +502,28 @@ void page_MENU_MISC(){//=================================================MISC===
   PID_elementTemp.Compute();
 }
 
-void page_MENU_PID(){//=================================================PID===============================================================
+void page_MENU_PID(){//=================================================PI-Controller===============================================================
   if(initPage)
   { 
     cursorPos = 0;
     dispOffset = 0;
-    initMenuPage(F("PID"), 6);
+    initMenuPage(F("PI-Controller"), 6);
     initPage = false;
     changeValues [10];
   }
 
-  if(menuItemPrintable(1,1)){display1.print(F("Kp Mash  =           "));}
-  if(menuItemPrintable(1,2)){display1.print(F("Ki Mash  =           "));}
-  if(menuItemPrintable(1,3)){display1.print(F("Kp Ele   =           "));}
-  if(menuItemPrintable(1,4)){display1.print(F("Ki Ele   =           "));}
-  if(menuItemPrintable(1,5)){display1.print(F("Kp Load  =           "));}
-  if(menuItemPrintable(1,6)){display1.print(F("Back                 "));}
+  if(menuItemPrintable(1,1)){display1.print(F("Kp Lautering =           "));}
+  if(menuItemPrintable(1,2)){display1.print(F("Ki Lautering =           "));}
+  if(menuItemPrintable(1,3)){display1.print(F("Kp Element   =           "));}
+  if(menuItemPrintable(1,4)){display1.print(F("Ki Element   =           "));}
+  if(menuItemPrintable(1,5)){display1.print(F("Kp Load      =           "));}
+  if(menuItemPrintable(1,6)){display1.print(F("Back                     "));}
 
-  if(menuItemPrintable(12,1)){printUint32_tAtWidth(settings.Kp_mash, 4, ' ');}
-  if(menuItemPrintable(12,2)){printDoubleAtWidth(settings.Ki_mash, 4, ' ');}
+  if(menuItemPrintable(12,1)){printUint32_tAtWidth(settings.Kp_lautering, 4, ' ');}
+  if(menuItemPrintable(12,2)){printDoubleAtWidth(settings.Ki_lautering, 4, ' ');}
   if(menuItemPrintable(12,3)){printDoubleAtWidth(settings.Kp_element, 4, ' ');}
   if(menuItemPrintable(12,4)){printDoubleAtWidth(settings.Ki_element, 4, ' ');}
-  if(menuItemPrintable(12,5)){printDoubleAtWidth(settings.Kp_load, 4, ' ');}
+  if(menuItemPrintable(12,5)){printDoubleAtWidth(settings.K_heatLoss, 4, ' ');}
 
   if(btnOk.PressReleased())
   {
@@ -538,18 +538,18 @@ void page_MENU_PID(){//=================================================PID=====
       case 5: currPage = MENU_ROOT; sets_Save(); initPage = true; return;
     }
   }
-        if(changeValues[0]){incrementDecrementDouble(&settings.Kp_mash, 1, 0.0, 200.0); settings.Kp_mash = round(settings.Kp_mash);}
-  else if(changeValues[1])incrementDecrementDouble(&settings.Ki_mash, 0.1, 0.0, 100.0);
+        if(changeValues[0]){incrementDecrementDouble(&settings.Kp_lautering, 1, 0.0, 200.0); settings.Kp_lautering = round(settings.Kp_lautering);}
+  else if(changeValues[1])incrementDecrementDouble(&settings.Ki_lautering, 0.1, 0.0, 100.0);
   else if(changeValues[2])incrementDecrementDouble(&settings.Kp_element, 0.1, 0.0, 50.0);
   else if(changeValues[3])incrementDecrementDouble(&settings.Ki_element, 0.05, 0.0, 25.0);
-  else if(changeValues[4])incrementDecrementDouble(&settings.Kp_load, 0.1, 1.0, 5.0);
+  else if(changeValues[4])incrementDecrementDouble(&settings.K_heatLoss, 0.1, 1.0, 5.0);
   else 
     doPointerNavigation(); 
 
-  PID_mashTemp.SetTunings(settings.Kp_mash, settings.Ki_mash, 0);
-  PID_mashTemp.SetOutputLimits(0,4095.0 * settings.dutycycleThreshold * 0.01);
-  PID_mashTemp.SetMode(AUTOMATIC);
-  PID_mashTemp.Compute();
+  PID_lauteringTemp.SetTunings(settings.Kp_lautering, settings.Ki_lautering, 0);
+  PID_lauteringTemp.SetOutputLimits(0,4095.0 * settings.dutycycleThreshold * 0.01);
+  PID_lauteringTemp.SetMode(AUTOMATIC);
+  PID_lauteringTemp.Compute();
 
   PID_elementTemp.SetTunings(settings.Kp_element, settings.Ki_element, 0);
   PID_elementTemp.SetOutputLimits(0,settings.maxElementTemp - settings.marginalTemp);
@@ -563,30 +563,22 @@ void page_MENU_TIME(){//=================================================MASH_PR
   { 
     cursorPos = 0;
     dispOffset = 0;
-    initMenuPage(F("MashProgram"), 9);
+    initMenuPage(F("MashProgram"), 5);
     initPage = false;
     changeValues [10];
   }
  
   if(menuItemPrintable(1,1)){display1.print(F("Manual =            "));}
   if(menuItemPrintable(1,2)){display1.print(F("Mash:               "));}
-  if(menuItemPrintable(1,3)){display1.print(F("Temp 1 =            "));}
-  if(menuItemPrintable(1,4)){display1.print(F("Time 1 =            "));}
-  if(menuItemPrintable(1,5)){display1.print(F("Temp 2 =            "));}
-  if(menuItemPrintable(1,6)){display1.print(F("Time 2 =            "));}
-  if(menuItemPrintable(1,7)){display1.print(F("Temp 3 =            "));}
-  if(menuItemPrintable(1,8)){display1.print(F("Time 3 =            "));}
-  if(menuItemPrintable(1,9)){display1.print(F("Back                "));}
+  if(menuItemPrintable(1,3)){display1.print(F("Temp   =            "));}
+  if(menuItemPrintable(1,4)){display1.print(F("Time   =            "));}
+  if(menuItemPrintable(1,5)){display1.print(F("Back                "));}
   
   if(menuItemPrintable(11,1)){printOnOff(settings.manualMode);}
   if(menuItemPrintable(7,2)){printDoubleAtWidth(passedTimeS/60.0, 3, 'm');}
   if(menuItemPrintable(13,2)){printUint32_tAtWidth(settings.targetTemp, 10, 'C');}
   if(menuItemPrintable(11,3)){printUint32_tAtWidth(settings.temp1, 10, 'C');}
   if(menuItemPrintable(11,4)){printUint32_tAtWidth(settings.time1, 10, 'm');}
-  if(menuItemPrintable(11,5)){printUint32_tAtWidth(settings.temp2, 10, 'C');}
-  if(menuItemPrintable(11,6)){printUint32_tAtWidth(settings.time2, 10, 'm');}
-  if(menuItemPrintable(11,7)){printUint32_tAtWidth(settings.temp3, 10, 'C');}
-  if(menuItemPrintable(11,8)){printUint32_tAtWidth(settings.time3, 10, 'm');}
 
   if(btnOk.PressReleased())
   {
@@ -596,11 +588,7 @@ void page_MENU_TIME(){//=================================================MASH_PR
       case 0: changeValues [0] = !changeValues [0]; edditing = !edditing; break;
       case 2: changeValues [1] = !changeValues [1]; edditing = !edditing; break;
       case 3: changeValues [2] = !changeValues [2]; edditing = !edditing; break;
-      case 4: changeValues [3] = !changeValues [3]; edditing = !edditing; break;
-      case 5: changeValues [4] = !changeValues [4]; edditing = !edditing; break;
-      case 6: changeValues [5] = !changeValues [5]; edditing = !edditing; break;
-      case 7: changeValues [6] = !changeValues [6]; edditing = !edditing; break;
-      case 8: currPage = MENU_ROOT; sets_Save(); initPage = true; return; 
+      case 4: currPage = MENU_ROOT; sets_Save(); initPage = true; return; 
     }
   }
 
@@ -612,13 +600,8 @@ void page_MENU_TIME(){//=================================================MASH_PR
   } 
   else if(changeValues[1]){incrementDecrementDouble(&settings.temp1, 1.0, 15.0, 100.0); settings.temp1 = round(settings.temp1);}
   else if(changeValues[2]){incrementDecrementDouble(&settings.time1, 1.0, 0.0, 90.0); settings.time1 = round(settings.time1);}
-  else if(changeValues[3]){incrementDecrementDouble(&settings.temp2, 1.0, 15.0, 100.0); settings.temp2 = round(settings.temp2);}
-  else if(changeValues[4]){incrementDecrementDouble(&settings.time2, 1.0, 0.0, 90.0); settings.time2 = round(settings.time2);}
-  else if(changeValues[5]){incrementDecrementDouble(&settings.temp3, 1.0, 15.0, 100.0); settings.temp3 = round(settings.temp3);}
-  else if(changeValues[6]){incrementDecrementDouble(&settings.time3, 1.0, 0.0, 90.0); settings.time3 = round(settings.time3);}
   else 
     doPointerNavigation();
-  
 }
 
 //======================================================TOOLS - menu Internals==================================================
@@ -868,15 +851,10 @@ void updateSettings()
       previousPassedTimeS = passedTimeS;
       passedTimeS = (millis() - tS) / (1000);
 
-      if (0 <= passedTimeS && passedTimeS < settings.time1 * 60) //60
-        settings.targetTemp = settings.temp1;
-      else if (settings.time1 * 60 <= passedTimeS && passedTimeS < (settings.time1 + settings.time2) * 60) //60
-        settings.targetTemp = settings.temp2;     
-      else if ((settings.time1 + settings.time2) * 60 <= passedTimeS && passedTimeS < (settings.time1 + settings.time2 + settings.time3) * 60) //60     
-        settings.targetTemp = settings.temp3;     
+      if (settings.time1 * 60 <= passedTimeS && passedTimeS < (settings.time1) * 60) //60
+        settings.targetTemp = settings.temp1;        
       else
         settings.targetTemp = 15;
-      
     }
     else
     {
@@ -889,11 +867,11 @@ void updateSettings()
     // Serial.println(settings.Kp_mash);
     // Serial.println(PID_mashTemp.GetKp());
 
-    updateAllItems = PID_mashTemp.Compute() || PID_elementTemp.Compute();
+    updateAllItems = PID_lauteringTemp.Compute() || PID_elementTemp.Compute();
     updateAllItems = true;                                                        //nytt
     previousDutyCycle = DutyCycle;
-    DutyCycle = Output_mashTemp;  
-    DutyCycle *= (1 + (loadCompensation / 60.0 ) * (settings.Kp_load - 1)); //(settings.Kp_load + loadCompensation)/settings.Kp_load;
+    DutyCycle = Output_lauteringTemp;  
+    DutyCycle *= (1 + (loadCompensation / 60.0 ) * (settings.K_heatLoss - 1)); //(settings.Kp_load + loadCompensation)/settings.Kp_load;
     DutyCycle = constrain(DutyCycle, 0, 4096.0 * settings.dutycycleThreshold * 0.01); 
     ledcWrite(ledChannel, DutyCycle); 
     
@@ -925,17 +903,17 @@ void updateSensorValues()                        // långsamast i hela programet
     sensor2.requestTemperatures();
     sensor3.requestTemperatures();
 
-    previous_mashTemp = current_mashTemp;
+    previous_lauteringTemp = current_lauteringTemp;
     previous_thermostatTemp = current_thermostatTemp;
 
     float RawValue1 = sensor1.getTempCByIndex(0);  // långsamast i hela programet
     float RawValue2 = sensor2.getTempCByIndex(0);  // långsamast i hela programet
     float RawValue3 = 22; //sensor3.getTempCByIndex(0);
 
-    current_mashTemp = constrain((((RawValue1 - settings.RawLow) * ReferenceRange) / RawRange) + ReferenceLow, 0, 110);
+    current_lauteringTemp = constrain((((RawValue1 - settings.RawLow) * ReferenceRange) / RawRange) + ReferenceLow, 0, 110);
     current_thermostatTemp = constrain((((RawValue2 - settings.RawLow) * ReferenceRange) / RawRange) + ReferenceLow, 0, 150);
     current_airTemp = constrain((((RawValue3 - settings.RawLow) * ReferenceRange) / RawRange) + ReferenceLow, 0, 40);
-    loadCompensation = constrain(current_mashTemp - current_airTemp, 0, 60.0);
+    loadCompensation = constrain(current_lauteringTemp - current_airTemp, 0, 60.0);
 
 /*  
     Serial.print("current_airTemp: ");
@@ -950,13 +928,13 @@ void updateSensorValues()                        // långsamast i hela programet
 void updateDisp2()
 {
   display2.clearBuffer();
-  if(menuItemPrintableDisp2(1,1)){display2.print(F("TargetTemp =      "));}
-  if(menuItemPrintableDisp2(1,2)){display2.print(F("MashTemp   =      "));}
-  if(menuItemPrintableDisp2(1,3)){display2.print(F("DC         =      "));}
-  if(menuItemPrintableDisp2(1,4)){display2.print(F("EleTemp    =      "));}
+  if(menuItemPrintableDisp2(1,1)){display2.print(F("TargetTemp    =   "));}
+  if(menuItemPrintableDisp2(1,2)){display2.print(F("LauteringTemp =   "));}
+  if(menuItemPrintableDisp2(1,3)){display2.print(F("DC            =   "));}
+  if(menuItemPrintableDisp2(1,4)){display2.print(F("EleTemp       =   "));}
 
   if(menuItemPrintableDisp2(11,1)){printDoubleAtWidthDisplay2(settings.targetTemp, 3, 'C');}  
-  if(menuItemPrintableDisp2(11,2)){printDoubleAtWidthDisplay2(current_mashTemp, 3, 'C');}
+  if(menuItemPrintableDisp2(11,2)){printDoubleAtWidthDisplay2(current_lauteringTemp, 3, 'C');}
   if(menuItemPrintableDisp2(11,3)){printDoubleAtWidthDisplay2(DutyCycle/4096.0 * 100.0, 3, '%');}
   if(menuItemPrintableDisp2(11,4)){printDoubleAtWidthDisplay2(current_thermostatTemp, 3, 'C');}
   display2.sendBuffer();
@@ -991,7 +969,7 @@ void setupMQTT() //Homeassistant
 {
   client.setServer(privates.broker, 1883);
   client.setCallback(callback);
-  client.connect("MashMachine", privates.brokerUser, privates.brokerPass);
+  client.connect("LauteringTun", privates.brokerUser, privates.brokerPass);
   while (!client.connected())
   {
     delay(100);
@@ -1014,7 +992,7 @@ void reconnectMQTT()  //Homeassistant
   if (millis() - lastAttempt > 3000) { // försök var 3:e sekund
     lastAttempt = millis();
     Serial.println("Trying to reconnect MQTT...");
-    if (client.connect("MashMachine", privates.brokerUser, privates.brokerPass)) {
+    if (client.connect("LauteringTun", privates.brokerUser, privates.brokerPass)) {
       Serial.println("MQTT connected!");
       // subscribe till topics här
     }
@@ -1022,11 +1000,13 @@ void reconnectMQTT()  //Homeassistant
 }
 void publishMessage() //Homeassistant
 {
-  publishInt(privates.topicMashTemp, current_mashTemp);
-  publishInt(privates.topicElementTemp, current_thermostatTemp);
-  publishFloat(privates.topicTimePassed, passedTimeS/60.0);
+  publishFloat(privates.topicLauteringTemp, current_lauteringTemp);
   publishInt(privates.topicTargetTemp, settings.targetTemp);
+  publishFloat(privates.topicTimePassed, passedTimeS/60.0);
   publishFloat(privates.topicDutyCycle, DutyCycle/4096.0 * 100.0);
+  publishFloat(privates.topic_Kp, settings.Kp_lautering);
+  publishFloat(privates.topic_Ki, settings.Ki_lautering);
+  publishFloat(privates.topic_K_heatLoss, settings.K_heatLoss);
 }
 void publishFloat(const char* topic, float value) {
   //int "%d", float "%f", bool "%s", obs vikitgt!
