@@ -11,27 +11,44 @@
 #include <WiFi.h> //Home assistant
 #include <PubSubClient.h> //Home assistant
 #include "Privates.h" //Homeassistant 
+#include <ArduinoJson.h> //Homeassistant
 #include <math.h>
 #include <MAX6675.h>
+#include <OneWire.h>
+#include <DallasTemperature.h> //temperatur
+#include <Adafruit_ADS1X15.h> //ADC
+#include <HTTPClient.h>      //InfluxDB
 //-----------------------------------------------------------------------
 // OLED display
 #define SCREEN_WIDTH 128 // OLED display width, in pixels
 #define SCREEN_HEIGHT 64 // OLED display height, in pixels
 //-----------------------------------------------------------------------
 //IO-pins
-#define dutyCycleOutPin 26 //pin 26 ESP32 - Grön LED
-#define confirmBtnPin 25 // pin 25 ESP32 - ok
-#define ledOnPin 14 //pin 14 ESP32 - röd LED
+#define dutyCycleOutPin 26 //    green LED
+#define ledOnPin 14 //           orange LED
+#define ledWaterDetectedPin 4 // red LED
+#define ledWifiPin 17 //         blue LED
+#define ledMqttPin 23 //         yellow LED
 #define VoutPin 35
 //rotary encoder
 #define outputA 13 //pin 13 ESP32
 #define outputB 16 //pin 16 ESP32
-// MAX6675 Thermocouple
-#define MAX6675_CS 5 //pin 4 ESP32 - MAX6675 chip select
-#define MAX6675_SO 19 //pin 2 ESP32 - MAX6675 serial out
-#define MAX6675_SCK 18 //pin 15 ESP32 - MAX6675 serial clock
+#define confirmBtnPin 25 // pin 25 ESP32 - ok
+// // MAX6675 Thermocouple
+// #define MAX6675_CS 5 //pin 4 ESP32 - MAX6675 chip select
+// #define MAX6675_SO 19 //pin 2 ESP32 - MAX6675 serial out
+// #define MAX6675_SCK 18 //pin 15 ESP32 - MAX6675 serial clock
 //NTC Thermistor
-#define NTC_PIN 34 //pin 34 ESP32 - NTC thermistor
+//#define NTC_PIN 34 //adc1 ads1115
+//Pump
+#define pumpPin 27 //pin 27 ESP32 - Pump
+//Larm
+#define alarmPin 19 //pin 33 ESP32 - alarm
+//
+#define ONE_WIRE_BUS 18 //pin 32 ESP32 - OneWire bus
+//Water indicator
+//#define waterDetectedPin adc2 ads1115
+#define waterDetectedPin 34
 //-----------------------------------------------------------------------
 //Settings
 #define DISP_ITEM_ROWS 4
@@ -42,6 +59,10 @@
 #define CHAR_X SCREEN_WIDTH/DISP_CHAR_WIDTH // 240/16
 #define CHAR_Y SCREEN_HEIGHT/DISP_ITEM_ROWS // 240/8
 #define SHIFT_UP 0 //240/8
+//PID
+//--------------------------------------------------------------
+#define P_ON_M 0
+#define P_ON_E 1
 //-----------------------------------------------------------------------
 //Varibles
 
@@ -74,14 +95,17 @@ enum pageType{
   MENU_TARGET_TEMP,
   MENU_MISC,
   MENU_PID,
-  MENU_TIME
+  MENU_MASH_PROGRAM,
+  MENU_HOPS_PROGRAM
+
 };
 enum pageType currPage = MENU_ROOT;
 void page_MenuRoot();
 void page_MENU_TARGET_TEMP();
 void page_MENU_MISC();
 void page_MENU_PID();
-void page_MENU_TIME();
+void page_MENU_MASH_PROGRAM();
+void page_MENU_HOPS_PROGRAM();
 //-----------------------------------------------------------------------
 //Menu internals
 boolean updateAllItems = true;
@@ -107,34 +131,42 @@ bool menuItemPrintable(uint8_t xPos, uint8_t yPos);
 //Print tools
 void printPointer();
 void printOnOff(bool val);
-void printUint32_tAtWidth(uint32_t value, uint8_t width, char c);
-void printDoubleAtWidth(double value, uint8_t width, char c);
+void printInt32_tAtWidth(int32_t value, uint8_t width, char c);
+void printDoubleAtWidth(double value, uint8_t width, char c, uint8_t decimals = 1);
 //-----------------------------------------------------------------------
 //Settings
 #pragma pack(1) //memory alignment
 struct Mysettings{
-  double Kp_element = 125.0;
-  double Ki_element = 0.0;
+  double Kp_mash = 250.0;
+  double Ki_mash = 0.0;
   double targetTemp = 25;
+  double k_heatLoss = 1.0;
+  bool POnE_mash = true;
 
-  boolean manualMode = 1;
-  u16_t temp1 = 66;
-  u16_t temp2 = 76;
-  u16_t temp3 = 78;
+  boolean autoModeMash = 1;
+  boolean manualModeHops = 1;
 
-  u16_t time1 = 60;
-  u16_t time2 = 15;
-  u16_t time3 = 15;
+  int16_t mashTemps[3] = {66,76,78};
+  int16_t mashTimes[3] = {60,15,15};
 
-  u16_t temps[3] = {66,76,78};
-  u16_t times[3] = {60,15,15};
+  int16_t hopTimes[3] = {60, 15, 1};
+
+  int16_t timeBeforeDisable = 2;
 
   boolean power = true;
-  u16_t RawLow = 0;
-  u16_t RawHigh = 4000;
-  u16_t maxElementTemp = 100; //220
+  boolean pump = false;
+  int16_t callibrationCold = -2;
+  int16_t callibrationHot = 115;
+  int16_t maxElementTemp = 100; //220
 
-  float filterWeight = 0.2;
+  double filter_adc1 = 0.95f;
+  double filterDC = 0.90f;
+
+  int16_t alarmVolume = 20;
+  int16_t alarmTime = 5;
+
+  int16_t waterSensorThreshold = 20000;
+  int16_t waterSensorOffset = 75;
 
   uint16_t settingsCheckValue = SETTINGS_CHKVAL;
 };
@@ -159,9 +191,12 @@ unsigned long lastEditTime = 0;
 double Output_mashTemp;
 double current_mashTemp;
 double previous_mashTemp;
+double current_airTemp;
+double previous_airTemp;
 double DutyCycle = 0;
 double previousDutyCycle = 0;
-PID PID_elementTemp(&current_mashTemp, &Output_mashTemp, &settings.targetTemp, settings.Kp_element, settings.Ki_element, 0, DIRECT);
+//                 y(t), u(t), r(t) 
+PID PID_mashTemp(&current_mashTemp, &Output_mashTemp, &settings.targetTemp, &current_airTemp, settings.Kp_mash, settings.Ki_mash, 0, 0, DIRECT); //P_ON_M
 //-----------------------------------------------------------------------
 // setting PWM properties
 int freq = 1000; //5
@@ -171,20 +206,20 @@ const int resolution = 12;
 // Oled - Adafruit_SSD1306
 U8G2_SH1106_128X64_NONAME_F_HW_I2C display1(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
 U8G2_SH1106_128X64_NONAME_F_HW_I2C display2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
-long timeLastTouched = 0;
-const long timeBeforeDisable = 120000;
+u16_t timeLastTouched = 0;
 //-----------------------------------------------------------------------
 //NTC Thermistor
 const double Vref = 3.27; //power supply voltage (3.3 V rail) -STM32 ADC pin is NOT 5 V tolerant
 double Vout; //Voltage divider output
-double R_NTC = 101800.0; //NTC thermistor, Resistance at 25 °C
-const double R_ref = 101700.0; //10k resistor measured resistance in Ohms (other element in the voltage divider)
+double R_NTC = 104300.0; //NTC thermistor, Resistance at 25 °C
+const double R_ref = 101900.0; //100k resistor measured resistance in Ohms (other element in the voltage divider)
 const double BETA = 3950.0; //B-coefficient of the thermistor
 const double T_0 = 298.15; //25°C in Kelvin
 double Temp_C; //Temperature measured by the thermistor (Celsius)
-double filteredValue = 0.0f;
-int raw = 0;
-float filtered = 0.0f;
+float adc1_raw_volt = 1.5;
+float filteredAdc1_volt = adc1_raw_volt;
+unsigned long lastReadTime = 0;
+const unsigned long readInterval = 250;  // ms
 //-----------------------------------------------------------------------
 double passedTime,previousPassedTime1,previousPassedTime2 = 0;
 bool initPage = true;
@@ -192,11 +227,29 @@ bool changeValue = false;
 bool changeValues [10];
 //-----------------------------------------------------------------------
 //MAX6675 Thermocouple
-MAX6675 thermoCouple(MAX6675_CS, MAX6675_SO, MAX6675_SCK);
-float temp = 0;
-unsigned long lastReadTime = 0;
-const unsigned long readInterval = 250;  // ms
+// MAX6675 thermoCouple(MAX6675_CS, MAX6675_SO, MAX6675_SCK);
+// float temp = 0;
 //-----------------------------------------------------------------------
+//Dallas Temperature
+OneWire oneWire(ONE_WIRE_BUS);
+DallasTemperature dallasTemp(&oneWire);
+//-----------------------------------------------------------------------
+//Alarm
+bool hopsAlarm = false;
+//-----------------------------------------------------------------------
+//ADC
+Adafruit_ADS1115 adc;
+//
+//ARX
+float a1 = -0.99, a2 = 0.00, b0 = 0.01, b1 = 0.00, b2 = 0.00;
+int16_t y[3] = {adc1_raw_volt, adc1_raw_volt, adc1_raw_volt};
+int16_t u[3] = {adc1_raw_volt, adc1_raw_volt, adc1_raw_volt};
+//-----------------------------------------------------------------------
+//Water indicator
+bool waterDetected = true;
+int16_t adc2_raw = 10000;
+int16_t filteredAdc2 = adc2_raw;
+int16_t filteredAdc2_offset = adc2_raw;
 
 void setup() {//=================================================SETUP=======================================================
   Serial.begin(115200);
@@ -204,10 +257,31 @@ void setup() {//=================================================SETUP==========
   // WiFi.disconnect(true);
   // WiFi.mode(WIFI_OFF);
 
-  analogSetAttenuation(ADC_11db); // Match input range to expected voltage
-  analogSetWidth(12);             // Ensure full resolution
+  //setupADC
+  adc.begin();
+  adc.setDataRate(RATE_ADS1115_128SPS);
+
+  adc1_raw_volt = readADCwithAutoGain(adc, 0);
+  filteredAdc1_volt = adc1_raw_volt;
+
+  int stableCount = 0;
+  const int requiredStable = 8;
+  const int maxMeasurements = 40;
+
+  delay(100);
+  for(int i = 0; i < maxMeasurements && stableCount < requiredStable; i++) {
+      adc1_raw_volt = readADCwithAutoGain(adc, 0);
+      filteredAdc1_volt = Filter(adc1_raw_volt, filteredAdc1_volt, settings.filter_adc1);
+
+      if(abs(filteredAdc1_volt - adc1_raw_volt) <= 0.01) stableCount++;
+      else stableCount = 0;
+
+      delay(50);
+  }
 
   currentTime = millis();
+  
+  dallasTemp.begin();
 
   // configure LED PWM functionalitites
   ledcSetup(ledChannel, freq, resolution);
@@ -216,10 +290,16 @@ void setup() {//=================================================SETUP==========
   ledcAttachPin(dutyCycleOutPin, ledChannel);
 
   pinMode(ledOnPin, OUTPUT);
+  pinMode(ledWaterDetectedPin, OUTPUT);
+  pinMode(ledWifiPin, OUTPUT);
+  pinMode(ledMqttPin, OUTPUT);
   pinMode(confirmBtnPin, INPUT_PULLDOWN);
   pinMode(outputA,INPUT_PULLUP);
   pinMode(outputB,INPUT_PULLUP);
-  pinMode(NTC_PIN, INPUT);
+  //pinMode(NTC_PIN, INPUT);
+  pinMode(pumpPin, OUTPUT);
+  pinMode(alarmPin, OUTPUT);
+  pinMode(waterDetectedPin, INPUT);
 
   // Koppla interrupt på båda encoder-pins till samma ISR
   attachInterrupt(digitalPinToInterrupt(outputA), handleInterrupt, CHANGE);
@@ -244,27 +324,47 @@ void setup() {//=================================================SETUP==========
   EEPROM.begin(sizeof(settings));
   sets_Load();
 
-  PID_elementTemp.SetTunings(settings.Kp_element, settings.Ki_element, 0);
-  PID_elementTemp.SetMode(AUTOMATIC);
-  PID_elementTemp.Compute();
+  PID_mashTemp.SetTunings(settings.Kp_mash, settings.Ki_mash, 0, settings.POnE_mash ? P_ON_E : P_ON_M); //P_ON_M
+  PID_mashTemp.SetMode(AUTOMATIC);
+  PID_mashTemp.Compute();
   //Thermocouple
-  SPI.begin();
-  thermoCouple.begin();
-  thermoCouple.setSPIspeed(4000000);
-  thermoCouple.setOffset(0); 
-  if (thermoCouple.read() == STATUS_OK) {
-    temp = thermoCouple.getCelsius();
-  } 
+  // SPI.begin();
+  // thermoCouple.begin();
+  // thermoCouple.setSPIspeed(4000000);
+  // thermoCouple.setOffset(0); 
+  // if (thermoCouple.read() == STATUS_OK) {
+  //   temp = thermoCouple.getCelsius();
+  // } 
+
+  
+
+  adc1_raw_volt = readADCwithAutoGain(adc, 0);
+  filteredAdc1_volt = adc1_raw_volt;
+
+  Temp_C = convertRawToCelsius(filteredAdc1_volt);
+  Temp_C = roundTo(Temp_C, 2); // Round to 2 decimal place
+
+  current_mashTemp = Temp_C;
+  previous_mashTemp = Temp_C;
 
   setupWiFi(); //Home assistant
   setupMQTT(); //Home assistant
+
+  WiFi.onEvent([](WiFiEvent_t event) {
+    if (event == SYSTEM_EVENT_STA_DISCONNECTED) {
+      if (client.connected()) {
+        client.publish("esp32/wifi", "offline", true);
+      }
+    }
+  });
+
 }
 
 void loop() { //=================================================LOOP=======================================================
 
   passedTime = millis() / 1000.0;
 
-  if(millis() - timeLastTouched > timeBeforeDisable)
+  if(millis()/1000.0/60.0 - timeLastTouched > settings.timeBeforeDisable)
   {
     display1.setPowerSave(1);
     display2.setPowerSave(1);
@@ -275,7 +375,7 @@ void loop() { //=================================================LOOP===========
     display2.setPowerSave(0);
   }
     
-  const float UPDATE_INTERVAL1 = 0.25;
+  const float UPDATE_INTERVAL1 = 0.10;
   const float UPDATE_INTERVAL2 = 0.01;
   bool shouldUpdate1 = (passedTime - previousPassedTime1 >= UPDATE_INTERVAL1);
   bool shouldUpdate2 = (passedTime - previousPassedTime2 >= UPDATE_INTERVAL2);
@@ -294,7 +394,8 @@ void loop() { //=================================================LOOP===========
     case MENU_TARGET_TEMP: page_MENU_TARGET_TEMP(); break;
     case MENU_MISC: page_MENU_MISC(); break;
     case MENU_PID: page_MENU_PID(); break;
-    case MENU_TIME: page_MENU_TIME(); break;
+    case MENU_MASH_PROGRAM: page_MENU_MASH_PROGRAM(); break;
+    case MENU_HOPS_PROGRAM: page_MENU_HOPS_PROGRAM(); break;
   }
 
   printPointer();              
@@ -313,7 +414,7 @@ void loop() { //=================================================LOOP===========
   captureButtonDownStates();
   
   //Homeassistant
-  if(passedTime - previousTime > 1.0) {publishMessage(); previousTime = passedTime;}
+  if(passedTime - previousTime >= 1.0) {publishMessage(); previousTime = passedTime;}
 
   detectedRotation = encoder.getDirection() != RotaryEncoderAccel::Direction::NOROTATION;
   if(detectedRotation)
@@ -327,17 +428,12 @@ void loop() { //=================================================LOOP===========
   }
 
   // === MQTT reconnect ===
-  if (WiFi.status() == WL_CONNECTED && !client.connected()) {
+   if (!client.connected()) {
     reconnectMQTT();
   }
 
   // === MQTT keep-alive ===
-  if (client.connected()) {
-    client.loop();   // måste köras så ofta som möjligt
-  }
-
-  //digitalWrite(ledWifiPin, WiFi.status() == WL_CONNECTED ? LOW : HIGH);
-  //digitalWrite(ledMqttPin, client.connected() ? LOW : HIGH);
+  client.loop();
 }
 
 void page_MenuRoot(){//=================================================ROOT_MENU============================================
@@ -346,7 +442,7 @@ void page_MenuRoot(){//=================================================ROOT_MEN
     cursorPos = root_pntrPos;
     dispOffset = root_dispOffset;
     
-    initMenuPage(F("MAIN MENU"), 4);
+    initMenuPage(F("MAIN MENU"), 5);
     initPage = false;
   }
   doPointerNavigation();
@@ -355,6 +451,7 @@ void page_MenuRoot(){//=================================================ROOT_MEN
   if(menuItemPrintable(1,2)){display1.print(F("MISC               "));} 
   if(menuItemPrintable(1,3)){display1.print(F("PID                "));} 
   if(menuItemPrintable(1,4)){display1.print(F("MASH PROGRAM       "));} 
+  if(menuItemPrintable(1,5)){display1.print(F("HOPS PROGRAM       "));} 
 
   if(btnOk.PressReleased())
   {
@@ -367,7 +464,8 @@ void page_MenuRoot(){//=================================================ROOT_MEN
     case 0: currPage = MENU_TARGET_TEMP; return;
     case 1: currPage = MENU_MISC; return;
     case 2: currPage = MENU_PID; return;
-    case 3: currPage = MENU_TIME; return;
+    case 3: currPage = MENU_MASH_PROGRAM; return;
+    case 4: currPage = MENU_HOPS_PROGRAM; return;
     }
   }
 }
@@ -384,7 +482,7 @@ void page_MENU_TARGET_TEMP(){//=================================================
   if(menuItemPrintable(1,1)){display1.print(F("Target Temp =      "));}
   if(menuItemPrintable(1,2)){display1.print(F("Back               "));}
 
-  if(menuItemPrintable(12,1)){printUint32_tAtWidth(settings.targetTemp, 3, 'C');}
+  if(menuItemPrintable(12,1)){printInt32_tAtWidth((uint32_t)settings.targetTemp, 3, 'C');}
 
   if(btnOk.PressReleased())
   {
@@ -398,36 +496,46 @@ void page_MENU_TARGET_TEMP(){//=================================================
   }
 
   if(changeValue)
+  {
     incrementDecrementDouble(&settings.targetTemp, 1.0, 15.0, settings.maxElementTemp);
+    settings.targetTemp = round(settings.targetTemp);
+  }
   else 
     doPointerNavigation(); 
-
-  
 }
+
 void page_MENU_MISC(){//=================================================MISC==========================================================
   if(initPage)
   {
     cursorPos = 0;
     dispOffset = 0;
-    initMenuPage(F("MISC"), 7);
+    initMenuPage(F("MISC"), 11);
     changeValues [10];
     initPage = false;
   }
    
   if(menuItemPrintable(1,1)){display1.print(F("POWER        =     "));}
-  if(menuItemPrintable(1,2)){display1.print(F("RAW          =     "));}
-  if(menuItemPrintable(1,3)){display1.print(F("HotCalli     =     "));}
-  if(menuItemPrintable(1,4)){display1.print(F("ColdCalli    =     "));}
-  if(menuItemPrintable(1,5)){display1.print(F("FilterWeight =     "));}
-  if(menuItemPrintable(1,6)){display1.print(F("max_Ele_temp =     "));}
-  if(menuItemPrintable(1,7)){display1.print(F("Back               "));}
+  if(menuItemPrintable(1,2)){display1.print(F("PUMP         =     "));}
+  if(menuItemPrintable(1,3)){display1.print(F("ColdCalli    =     "));}
+  if(menuItemPrintable(1,4)){display1.print(F("HotCalli     =     "));}
+  if(menuItemPrintable(1,5)){display1.print(F("FiltTemp  =     "));}
+  if(menuItemPrintable(1,6)){display1.print(F("FiltDC       =     "));}
+  if(menuItemPrintable(1,7)){display1.print(F("max_Ele_temp =     "));}
+  if(menuItemPrintable(1,8)){display1.print(F("TimeToIdle   =     "));}
+  if(menuItemPrintable(1,9)){display1.print(F("AlarmVolume  =     "));}
+  if(menuItemPrintable(1,10)){display1.print(F("AlarmTime   =     "));}
+  if(menuItemPrintable(1,11)){display1.print(F("Back              "));}
 
   if(menuItemPrintable(12,1)){printOnOff(settings.power);}
-  if(menuItemPrintable(12,2)){printDoubleAtWidth(filtered, 3, ' ');}
-  if(menuItemPrintable(12,3)){printDoubleAtWidth(settings.RawLow, 3, ' ');}
-  if(menuItemPrintable(12,4)){printDoubleAtWidth(settings.RawHigh, 3, ' ');}
-  if(menuItemPrintable(12,5)){printDoubleAtWidth(settings.filterWeight, 3, ' ');}
-  if(menuItemPrintable(12,6)){printUint32_tAtWidth(settings.maxElementTemp, 4, 'C');}
+  if(menuItemPrintable(12,2)){printOnOff(settings.pump);}
+  if(menuItemPrintable(12,3)){printInt32_tAtWidth(settings.callibrationCold, 3, ' ');}
+  if(menuItemPrintable(12,4)){printInt32_tAtWidth(settings.callibrationHot, 3, ' ');}
+  if(menuItemPrintable(12,5)){printDoubleAtWidth(settings.filter_adc1, 3, ' ', 2);}
+  if(menuItemPrintable(12,6)){printDoubleAtWidth(settings.filterDC, 3, ' ', 2);}
+  if(menuItemPrintable(12,7)){printInt32_tAtWidth(settings.maxElementTemp, 3, 'C');}
+  if(menuItemPrintable(12,8)){printInt32_tAtWidth(settings.timeBeforeDisable, 3, 'm');}
+  if(menuItemPrintable(12,9)){printInt32_tAtWidth(settings.alarmVolume, 3, '%');}
+  if(menuItemPrintable(12,10)){printInt32_tAtWidth(settings.alarmTime, 3, 's');}
       
   if(btnOk.PressReleased())
   {
@@ -436,24 +544,29 @@ void page_MENU_MISC(){//=================================================MISC===
     switch (cursorPos)
     {
       case 0: changeValues [0] = !changeValues [0]; edditing = !edditing; break; 
-      case 2: changeValues [1] = !changeValues [1]; edditing = !edditing; break; 
-      case 3: changeValues [2] = !changeValues [2]; edditing = !edditing; break;
-      case 4: changeValues [3] = !changeValues [3]; edditing = !edditing; break; 
-      case 5: changeValues [4] = !changeValues [4]; edditing = !edditing; break;
-      case 6: currPage = MENU_ROOT; sets_Save(); initPage = true; return;
+      case 1: changeValues [1] = !changeValues [1]; edditing = !edditing; break; 
+      case 2: changeValues [2] = !changeValues [2]; edditing = !edditing; break; 
+      case 3: changeValues [3] = !changeValues [3]; edditing = !edditing; break;
+      case 4: changeValues [4] = !changeValues [4]; edditing = !edditing; break; 
+      case 5: changeValues [5] = !changeValues [5]; edditing = !edditing; break;
+      case 6: changeValues [6] = !changeValues [6]; edditing = !edditing; break;
+      case 7: changeValues [7] = !changeValues [7]; edditing = !edditing; break;
+      case 8: changeValues [8] = !changeValues [8]; edditing = !edditing; break;
+      case 9: changeValues [9] = !changeValues [9]; edditing = !edditing; break;
+      case 10: currPage = MENU_ROOT; sets_Save(); initPage = true; return;
     }
   }
 
-  if(changeValues[0])
-  {
-    *&settings.power = !*&settings.power;
-    changeValues [0] = false;
-    updateItemValue = true; 
-  }
-  else if(changeValues[1])incrementDecrementInt(&settings.RawLow, 1, 0, 400);
-  else if(changeValues[2])incrementDecrementInt(&settings.RawHigh, 1, 3800, 4096);
-  else if(changeValues[3])incrementDecrementFloat(&settings.filterWeight, 0.1f, 0.0f, 0.8f);
-  else if(changeValues[4])incrementDecrementInt(&settings.maxElementTemp, 1, 15, 100);
+       if(changeValues[0]){*&settings.power = !*&settings.power; changeValues [0] = false; updateItemValue = true; }
+       if(changeValues[1] && waterDetected){*&settings.pump = !*&settings.pump; changeValues [1] = false; updateItemValue = true; }
+  else if(changeValues[2])incrementDecrementInt(&settings.callibrationCold, 1, -50, 50);
+  else if(changeValues[3])incrementDecrementInt(&settings.callibrationHot, 1, 60, 140);
+  else if(changeValues[4])incrementDecrementDouble(&settings.filter_adc1, 0.01f, 0.0f, 0.99f);
+  else if(changeValues[5])incrementDecrementDouble(&settings.filterDC, 0.01f, 0.0f, 0.99f);
+  else if(changeValues[6])incrementDecrementInt(&settings.maxElementTemp, 1, 15, 100);
+  else if(changeValues[7])incrementDecrementInt(&settings.timeBeforeDisable, 1, 1, 90);
+  else if(changeValues[8])incrementDecrementInt(&settings.alarmVolume, 1, 0, 100);
+  else if(changeValues[9])incrementDecrementInt(&settings.alarmTime, 1, 1, 30);
   else 
     doPointerNavigation(); 
 }
@@ -462,17 +575,21 @@ void page_MENU_PID(){//=================================================PID=====
   {
     cursorPos = 0;
     dispOffset = 0;
-    initMenuPage(F("PID"), 3);
+    initMenuPage(F("PID"), 5);
     changeValues [10]; 
     initPage = false;
   }
 
-  if(menuItemPrintable(1,1)){display1.print(F("Kp_ele   =           "));}
-  if(menuItemPrintable(1,2)){display1.print(F("Ki_ele   =           "));}
-  if(menuItemPrintable(1,3)){display1.print(F("Back                 "));}
+  if(menuItemPrintable(1,1)){display1.print(F("Kp_ele     =           "));}
+  if(menuItemPrintable(1,2)){display1.print(F("Ki_ele     =           "));}
+  if(menuItemPrintable(1,3)){display1.print(F("k_heatLoss =           "));}
+  if(menuItemPrintable(1,4)){display1.print(F("POnE       =           "));}
+  if(menuItemPrintable(1,5)){display1.print(F("Back                   "));}
 
-  if(menuItemPrintable(12,1)){printUint32_tAtWidth(settings.Kp_element, 3, ' ');}
-  if(menuItemPrintable(12,2)){printDoubleAtWidth(settings.Ki_element, 3, ' ');}
+  if(menuItemPrintable(12,1)){printInt32_tAtWidth(settings.Kp_mash, 3, ' ');}
+  if(menuItemPrintable(12,2)){printDoubleAtWidth(settings.Ki_mash, 3, ' ');}
+  if(menuItemPrintable(12,3)){printDoubleAtWidth(settings.k_heatLoss, 3, ' ');}
+  if(menuItemPrintable(12,4)){printOnOff(settings.POnE_mash);}
      
   if(btnOk.PressReleased())
   {
@@ -482,15 +599,19 @@ void page_MENU_PID(){//=================================================PID=====
     {
       case 0: changeValues [0] = !changeValues [0]; edditing = !edditing; break;
       case 1: changeValues [1] = !changeValues [1]; edditing = !edditing; break;
-      case 2: currPage = MENU_ROOT; sets_Save(); initPage = true; return;
+      case 2: changeValues [2] = !changeValues [2]; edditing = !edditing; break;
+      case 3: changeValues [3] = !changeValues [3]; edditing = !edditing; break;
+      case 4: currPage = MENU_ROOT; sets_Save(); initPage = true; return;
     }
   }
-       if(changeValues[0])incrementDecrementDouble(&settings.Kp_element, 1.0, 0.0, 1000.0);
-  else if(changeValues[1])incrementDecrementDouble(&settings.Ki_element, 0.1, 0.0, 200.0);
+       if(changeValues[0])incrementDecrementDouble(&settings.Kp_mash, 1.0, 0.0, 1000.0);
+  else if(changeValues[1])incrementDecrementDouble(&settings.Ki_mash, 0.1, 0.0, 200.0);
+  else if(changeValues[2])incrementDecrementDouble(&settings.k_heatLoss, 1.0, 0.0, 200.0);
+  else if(changeValues[3]){*&settings.POnE_mash = !*&settings.POnE_mash; changeValues [3] = false; updateItemValue = true;}
   else 
     doPointerNavigation(); 
 }
-void page_MENU_TIME(){//=================================================MASH_PROGRAM====================================================
+void page_MENU_MASH_PROGRAM(){//=================================================MASH_PROGRAM====================================================
   if(initPage)
   {
     cursorPos = 0;
@@ -500,24 +621,24 @@ void page_MENU_TIME(){//=================================================MASH_PR
     initPage = false;
   }
 
-  if(menuItemPrintable(1,1)){display1.print(F("Manual =            "));}
-  if(menuItemPrintable(1,3)){display1.print(F("Temp1  =            "));}
-  if(menuItemPrintable(1,4)){display1.print(F("Time1  =            "));}
-  if(menuItemPrintable(1,5)){display1.print(F("Temp2  =            "));}
-  if(menuItemPrintable(1,6)){display1.print(F("Time2  =            "));}
-  if(menuItemPrintable(1,7)){display1.print(F("Temp3  =            "));}
-  if(menuItemPrintable(1,8)){display1.print(F("Time3  =            "));}
-  if(menuItemPrintable(1,9)){display1.print(F("Back                "));}
+  if(menuItemPrintable(1,1)){display1.print(F("Auto Mode   =            "));}
+  if(menuItemPrintable(1,3)){display1.print(F("Mash Temp1  =            "));}
+  if(menuItemPrintable(1,4)){display1.print(F("Mash Time1  =            "));}
+  if(menuItemPrintable(1,5)){display1.print(F("Mash Temp2  =            "));}
+  if(menuItemPrintable(1,6)){display1.print(F("Mash Time2  =            "));}
+  if(menuItemPrintable(1,7)){display1.print(F("Mash Temp3  =            "));}
+  if(menuItemPrintable(1,8)){display1.print(F("Mash Time3  =            "));}
+  if(menuItemPrintable(1,9)){display1.print(F("Back                     "));}
 
-  if(menuItemPrintable(12,1)){printOnOff(settings.manualMode);}
+  if(menuItemPrintable(12,1)){printOnOff(settings.autoModeMash);}
   if(menuItemPrintable(1,2)){printDoubleAtWidth(passedTimeS/60.0, 3, 'm');}
-  if(menuItemPrintable(12,2)){printUint32_tAtWidth(settings.targetTemp, 3, 'C');}
-  if(menuItemPrintable(12,3)){printUint32_tAtWidth(settings.temp1, 3, 'C');}
-  if(menuItemPrintable(12,4)){printUint32_tAtWidth(settings.time1, 3, 's');}
-  if(menuItemPrintable(12,5)){printUint32_tAtWidth(settings.temp2, 3, 'C');}  
-  if(menuItemPrintable(12,6)){printUint32_tAtWidth(settings.time2, 3, 's');}
-  if(menuItemPrintable(12,7)){printUint32_tAtWidth(settings.temp3, 3, 'C');}
-  if(menuItemPrintable(12,8)){printUint32_tAtWidth(settings.time3, 3, 's');}
+  if(menuItemPrintable(12,2)){printInt32_tAtWidth(settings.targetTemp, 3, 'C');}
+  if(menuItemPrintable(12,3)){printInt32_tAtWidth(settings.mashTemps[0], 3, 'C');}
+  if(menuItemPrintable(12,4)){printInt32_tAtWidth(settings.mashTimes[0], 3, 'm');}
+  if(menuItemPrintable(12,5)){printInt32_tAtWidth(settings.mashTemps[1], 3, 'C');}  
+  if(menuItemPrintable(12,6)){printInt32_tAtWidth(settings.mashTimes[1], 3, 'm');}
+  if(menuItemPrintable(12,7)){printInt32_tAtWidth(settings.mashTemps[2], 3, 'C');}
+  if(menuItemPrintable(12,8)){printInt32_tAtWidth(settings.mashTimes[2], 3, 'm');}
    
   if(btnOk.PressReleased())
   {
@@ -538,22 +659,83 @@ void page_MENU_TIME(){//=================================================MASH_PR
 
   if(changeValues[0])
   {
-    *&settings.manualMode = !*&settings.manualMode;
+    *&settings.autoModeMash = !*&settings.autoModeMash;
+    if(settings.autoModeMash){settings.pump = true;}
+    else{settings.pump = false;}
     changeValues [0] = false;
     updateItemValue = true; 
   } 
-  else if(changeValues[1])incrementDecrementInt(&settings.temp1, 1, 15, settings.maxElementTemp);
-  else if(changeValues[2])incrementDecrementInt(&settings.time1, 1, 0, 90);
-  else if(changeValues[3])incrementDecrementInt(&settings.temp2, 1, 15, settings.maxElementTemp);
-  else if(changeValues[4])incrementDecrementInt(&settings.time2, 1, 0, 90);
-  else if(changeValues[5])incrementDecrementInt(&settings.temp3, 1, 15, settings.maxElementTemp);
-  else if(changeValues[6])incrementDecrementInt(&settings.time3, 1, 0, 90);
+  else if(changeValues[1])incrementDecrementInt(&settings.mashTemps[0], 1, 15, settings.maxElementTemp);
+  else if(changeValues[2])incrementDecrementInt(&settings.mashTimes[0], 1, 0, 90);
+  else if(changeValues[3])incrementDecrementInt(&settings.mashTemps[1], 1, 15, settings.maxElementTemp);
+  else if(changeValues[4])incrementDecrementInt(&settings.mashTimes[1], 1, 0, 90);
+  else if(changeValues[5])incrementDecrementInt(&settings.mashTemps[2], 1, 15, settings.maxElementTemp);
+  else if(changeValues[6])incrementDecrementInt(&settings.mashTimes[2], 1, 0, 90);
   else if(changeValues[7])
   {
     currPage = MENU_ROOT; 
     sets_Save(); 
     initPage = true; 
     changeValues [8] = false;
+    updateItemValue = true; 
+  }
+  else 
+    doPointerNavigation();
+}
+
+void page_MENU_HOPS_PROGRAM(){//=================================================HOPS_PROGRAM====================================================
+  if(initPage)
+  {
+    cursorPos = 0;
+    dispOffset = 0;
+    initMenuPage(F("Hops Program"), 6);
+    changeValues [10];
+    initPage = false;
+  }
+
+  if(menuItemPrintable(1,1)){display1.print(F("Manual =            "));}
+  if(menuItemPrintable(1,3)){display1.print(F("Time1  =            "));}
+  if(menuItemPrintable(1,4)){display1.print(F("Time2  =            "));}
+  if(menuItemPrintable(1,5)){display1.print(F("Time3  =            "));}
+  if(menuItemPrintable(1,6)){display1.print(F("Back                "));}
+
+  if(menuItemPrintable(12,1)){printOnOff(settings.autoModeMash);}
+  if(menuItemPrintable(1,2)){printDoubleAtWidth(passedTimeS/60.0, 3, 'm');}
+  if(menuItemPrintable(12,2)){printInt32_tAtWidth(settings.targetTemp, 3, 'C');}
+  if(menuItemPrintable(12,3)){printInt32_tAtWidth(settings.hopTimes[0], 3, 'm');}
+  if(menuItemPrintable(12,4)){printInt32_tAtWidth(settings.hopTimes[1], 3, 'm');}
+  if(menuItemPrintable(12,5)){printInt32_tAtWidth(settings.hopTimes[2], 3, 'm');}
+   
+  if(btnOk.PressReleased())
+  {
+    FlashPointer();
+    
+    switch (cursorPos)
+    {
+      case 0: changeValues [0] = !changeValues [0]; edditing = !edditing; break;
+      case 2: changeValues [1] = !changeValues [1]; edditing = !edditing; break;
+      case 3: changeValues [2] = !changeValues [2]; edditing = !edditing; break;
+      case 4: changeValues [3] = !changeValues [3]; edditing = !edditing; break;
+      case 5: currPage = MENU_ROOT; sets_Save(); initPage = true; return; 
+    }
+  }
+
+  if(changeValues[0])
+  {
+    *&settings.autoModeMash = !*&settings.autoModeMash;
+    changeValues [0] = false;
+    updateItemValue = true; 
+  } 
+
+  else if(changeValues[1])incrementDecrementInt(&settings.hopTimes[0], 1, 0, 90);
+  else if(changeValues[2])incrementDecrementInt(&settings.hopTimes[1], 1, 0, 90);
+  else if(changeValues[3])incrementDecrementInt(&settings.hopTimes[2], 1, 0, 90);
+  else if(changeValues[4])
+  {
+    currPage = MENU_ROOT; 
+    sets_Save(); 
+    initPage = true; 
+    changeValues [3] = false;
     updateItemValue = true; 
   }
   else 
@@ -602,7 +784,7 @@ void doPointerNavigation()
 
       printPointer();  // Only redraw when view actually changes
     }
-    timeLastTouched = millis(); // Update last touched time
+    timeLastTouched = millis()/1000.0/60.0; // Update last touched time
     
     // Serial.print("Direction: ");
     // Serial.print(direction);
@@ -612,13 +794,13 @@ void doPointerNavigation()
     // Serial.println(dispOffset);
   }
 }
-void incrementDecrementInt(uint16_t *v, uint16_t amount, uint16_t min, uint16_t max)
+void incrementDecrementInt(int16_t *v, int16_t amount, int16_t min, int16_t max)
 {
-    int direction = encoder.getRPM();
+    int16_t direction = encoder.getRPM();
 
     if (direction != 0) {
-        int target = direction * amount;
-        int newValue = *v + target;
+        int16_t target = direction * amount;
+        int16_t newValue = *v + target;
 
         if (newValue >= min && newValue <= max) {
             *v = newValue;
@@ -631,7 +813,7 @@ void incrementDecrementInt(uint16_t *v, uint16_t amount, uint16_t min, uint16_t 
         }
 
         updateItemValue = true;
-        timeLastTouched = millis();
+        timeLastTouched = millis()/1000.0/60.0;
     }
 
     delayMicroseconds(5);
@@ -653,7 +835,7 @@ void incrementDecrementFloat(float *v, float amount, float min, float max)
           *v = max;
 
         updateItemValue = true;
-        timeLastTouched = millis();
+        timeLastTouched = millis()/1000.0/60.0;
     }
 
     delayMicroseconds(5);
@@ -674,7 +856,7 @@ void incrementDecrementDouble(double *v, double amount, double min, double max)
           *v = max;
 
         updateItemValue = true;
-        timeLastTouched = millis();
+        timeLastTouched = millis()/1000.0/60.0;
     }
 
     delayMicroseconds(5);
@@ -716,7 +898,7 @@ void printPointer(){
   display1.sendBuffer();
 }
 void FlashPointer(){
-  timeLastTouched = millis();
+  timeLastTouched = millis()/1000.0/60.0;
   display1.drawStr(0, 1*CHAR_Y, " ");
   display1.drawStr(0, 2*CHAR_Y, " ");
   display1.drawStr(0, 3*CHAR_Y, " ");
@@ -739,28 +921,28 @@ void printChars(uint8_t cnt, char c){
     for(u_int8_t i = 1; i < cnt; i++){display1.print(cc);}
   }
 }
-uint8_t getUint32_tCharCnt(uint32_t value)
+uint8_t getInt32_tCharCnt(int32_t value)
 {
   if(value == 0){return 1;}
-  uint32_t tensCalc = 10; int8_t cnt = 1;
+  int32_t tensCalc = 10; int8_t cnt = 1;
   while (tensCalc <= value && cnt < 20){tensCalc *= 10; cnt += 1;}
   return cnt;
 }
 uint8_t getDoubleCharCnt(double value)
 {
   if(value == 0){return 1;}
-  uint32_t tensCalc = 10; int8_t cnt = 1;
+  uint32_t tensCalc = 10; uint8_t cnt = 1;
   while (tensCalc <= value && cnt < 20){tensCalc *= 10; cnt += 1;}
   return cnt;
 }
-void printUint32_tAtWidth(uint32_t value, uint8_t width, char c){
+void printInt32_tAtWidth(int32_t value, uint8_t width, char c){
   display1.print(value);
   display1.print(c);
-  printChars(width-getUint32_tCharCnt(value), ' ');
+  printChars(width-getInt32_tCharCnt(value), ' ');
 }
-void printDoubleAtWidth(double value, uint8_t width, char c){
+void printDoubleAtWidth(double value, uint8_t width, char c, uint8_t decimals){
   char buf[10];
-  dtostrf(value, width-getDoubleCharCnt(value), 1, buf); // 1 decimal
+  dtostrf(value, width-getDoubleCharCnt(value), decimals, buf); // 1 decimal
   display1.print(buf);
   display1.print(c);
 }
@@ -771,10 +953,10 @@ void printCharsDisplay2(uint8_t cnt, char c){
     for(u_int8_t i = 1; i < cnt; i++){display2.print(cc);}
   }
 }
-void printUint32_tAtWidthDisplay2(uint32_t value, uint8_t width, char c){
+void printInt32_tAtWidthDisplay2(int32_t value, uint8_t width, char c){
   display2.print(value);
   display2.print(c);
-  printCharsDisplay2(width-getUint32_tCharCnt(value), ' ');
+  printCharsDisplay2(width-getInt32_tCharCnt(value), ' ');
 }
 void printDoubleAtWidthDisplay2(double value, uint8_t width, char c){
   char buf[10];
@@ -806,34 +988,53 @@ void sets_Save()
 
 void updateSettings()
 {
+  if(!waterDetected || !settings.power){*&settings.pump = false;}
+
   if(settings.power)
   {
     digitalWrite(ledOnPin, HIGH);
+    digitalWrite(ledWaterDetectedPin, !waterDetected);
 
     previousPassedTimeS = passedTimeS;
 
-    bool isManual = settings.manualMode;
-    passedTimeS = isManual ? 0 : (millis() - tS) / 1000;
+    bool isAuto = settings.autoModeMash;
+    passedTimeS = isAuto ? (millis() - tS) / 1000.0 : 0;
 
-    if (isManual) {
+    if (!isAuto) {
       tS = millis();
     }
 
-    settings.targetTemp = isManual ? settings.targetTemp :
-    (passedTimeS < settings.times[0]) ? settings.temps[0] :
-    (passedTimeS < settings.times[0] + settings.times[1]) ? settings.temps[1] :
-    (passedTimeS < settings.times[0] + settings.times[1] + settings.times[2]) ? settings.temps[2] :
+    settings.targetTemp = !isAuto ? settings.targetTemp :
+    (passedTimeS/60.0 < settings.mashTimes[0]) ? settings.mashTemps[0] :
+    (passedTimeS/60.0 < settings.mashTimes[0] + settings.mashTimes[1]) ? settings.mashTemps[1] :
+    (passedTimeS/60.0 < settings.mashTimes[0] + settings.mashTimes[1] + settings.mashTimes[2]) ? settings.mashTemps[2] :
     15.0;
+    
+    // Serial.print("PassedTimeS: ");
+    // Serial.println(passedTimeS/60.0);
 
-    PID_elementTemp.SetTunings(settings.Kp_element, settings.Ki_element, 0);
-    PID_elementTemp.SetMode(AUTOMATIC);
-    updateAllItems = PID_elementTemp.Compute();
+         if (isAuto) {hopsAlarm = false; analogWrite(alarmPin, 0);} 
+    else if (passedTimeS/60.0 >= settings.hopTimes[0] && passedTimeS/60.0 < (settings.hopTimes[0] + settings.alarmTime/60.0)) {hopsAlarm = true; analogWrite(alarmPin, settings.alarmVolume /100.0 * 4095.0);} 
+    else if (passedTimeS/60.0 >= settings.hopTimes[1] && passedTimeS/60.0 < (settings.hopTimes[1] + settings.alarmTime/60.0)) {hopsAlarm = true; analogWrite(alarmPin, settings.alarmVolume /100.0 * 4095.0);} 
+    else if (passedTimeS/60.0 >= settings.hopTimes[2] && passedTimeS/60.0 < (settings.hopTimes[2] + settings.alarmTime/60.0)) {hopsAlarm = true; analogWrite(alarmPin, settings.alarmVolume /100.0 * 4095.0);}
+    else {hopsAlarm = false; analogWrite(alarmPin, 0);}
+
+    PID_mashTemp.SetTunings(settings.Kp_mash, settings.Ki_mash, 0, settings.POnE_mash ? P_ON_E : P_ON_M);
+    PID_mashTemp.SetMode(AUTOMATIC);
+    updateAllItems = PID_mashTemp.Compute();
+
+    PID_mashTemp.SetHeatLossCoefficient(settings.k_heatLoss);
 
     previousDutyCycle = DutyCycle;
     DutyCycle = Output_mashTemp;  
-    ledcWrite(ledChannel, DutyCycle); 
-    // Serial.print("DutyCycle: ");
-    // Serial.println(DutyCycle);
+    
+    // DutyCycle = (1.0 - settings.filterDC) * DutyCycle + settings.filterDC * previousDutyCycle; //smoothing
+
+    if(waterDetected) DutyCycle = Filter(DutyCycle, previousDutyCycle, settings.filterDC); 
+    else DutyCycle = 0;
+    ledcWrite(ledChannel, DutyCycle);
+    // Serial.print(", DutyCycle: ");
+    // Serial.print(DutyCycle);
 
     client.loop();
     if(TopicArrived)
@@ -843,11 +1044,21 @@ void updateSettings()
       //settings.targetTemp = atof(mqttpayload);
       TopicArrived = false;
     }
+
+    if(settings.pump)
+    {
+      digitalWrite(pumpPin, HIGH);
+    }
+    else
+    {
+      digitalWrite(pumpPin, LOW);
+    }
   }
   else
   {
     digitalWrite(ledOnPin, LOW);
     ledcWrite(ledChannel, 0);
+    digitalWrite(ledWaterDetectedPin, 0);
   }
 }
 
@@ -858,106 +1069,325 @@ void updateSensorValues() {
   {
     lastReadTime = currentTime;
 
-    Temp_C = convertRawToCelsius(analogRead(NTC_PIN));
-    Temp_C = round(Temp_C * 10.0) / 10.0; // Round to 1 decimal place
-    
-    Serial.print("current_mashTemp:\t");
-    Serial.print(current_mashTemp, 1);
-    Serial.print(" °C, ");
-    Serial.print("Temp_C:\t");
-    Serial.println(Temp_C, 1);
+    adc1_raw_volt = readADCwithAutoGain(adc, 0);
 
+    // adc.setGain(GAIN_TWO); // 1x gain ±2.046V
+    // adc.startADCReading(ADS1X15_REG_CONFIG_MUX_SINGLE_0, /*continuous=*/false);
+    // while(!adc.conversionComplete());
+    // adc1_raw_volt = adc.getLastConversionResults();
+
+    filteredAdc1_volt = Filter(adc1_raw_volt, filteredAdc1_volt, settings.filter_adc1); 
+    //18200  wet (3.3v)
+    //20000  dry (3.3v)
+    //filtered = Filter(raw, filtered);
+
+    Temp_C = convertRawToCelsius(filteredAdc1_volt);
+    Temp_C = roundTo(Temp_C, 3); // Round to 3 decimal places
+
+    dallasTemp.requestTemperatures(); // Request temperature readings from the sensor
+    previous_airTemp = current_airTemp;
+    current_airTemp = dallasTemp.getTempCByIndex(0);
+
+    waterDetected = !digitalRead(waterDetectedPin);
+
+    Serial.print("Voltage adc1: ");
+    Serial.print(adc1_raw_volt, 4);
+    Serial.print(" V");
+
+    Serial.print(", Gain range: ±");
+    Serial.print(adc.getFsRange(), 2);
+    Serial.print(" V");
+
+    Serial.print(", Water Detected: ");
+    Serial.print(waterDetected ? "YES" : "NO");
+    
+    Serial.print(", Filtered ADC1: ");
+    Serial.print(filteredAdc1_volt, 4); 
+
+    Serial.print(", current_mashTemp: ");
+    Serial.print(current_mashTemp, 1);
+    Serial.println(" °C, ");
+
+    // Serial.print(", current_airTemp:\t");
+    // Serial.print(current_airTemp);
+    // Serial.print(" °C, ");
+
+    // Serial.print(", TargetTemp:\t");
+    // Serial.print(settings.targetTemp);
+    // Serial.print(" °C, ");
+    // Serial.print(", DutyCycle:\t");
+    // Serial.print(DutyCycle/4095.0 * 100.0);
+
+    // Serial.println(", Q_ff: " + String(PID_mashTemp.Q_ff));
+
+
+    previous_mashTemp = current_mashTemp;
+    current_mashTemp = Temp_C;
   }
 
-  previous_mashTemp = current_mashTemp;
-  current_mashTemp = Temp_C;
 }
 
 
 void updateDisp2()
 {
   display2.clearBuffer();
-  if(menuItemPrintableDisp2(1,1)){display2.print(F("TargetTemp  = "));}
-  if(menuItemPrintableDisp2(1,2)){display2.print(F("MashTemp    = "));}
-  if(menuItemPrintableDisp2(1,3)){display2.print(F("DC          = "));}
+  if(menuItemPrintableDisp2(1,1)){display2.print(F("TargetTemp =  "));}
+  if(menuItemPrintableDisp2(1,2)){display2.print(F("MashTemp   =  "));}
+  if(menuItemPrintableDisp2(1,3)){display2.print(F("DC         =  "));}
+  if(menuItemPrintableDisp2(1,4)){display2.print(F("AirTemp    =  "));}
 
-  if(menuItemPrintableDisp2(12,1)){printUint32_tAtWidthDisplay2(settings.targetTemp, 3, 'C');}
-  if(menuItemPrintableDisp2(12,2)){printUint32_tAtWidthDisplay2(current_mashTemp, 3, 'C');}
-  if(menuItemPrintableDisp2(12,3)){printUint32_tAtWidthDisplay2(DutyCycle/4095.0 * 100.0, 3, '%');}
+  if(menuItemPrintableDisp2(11,1)){printInt32_tAtWidthDisplay2(settings.targetTemp, 3, 'C');}
+  if(menuItemPrintableDisp2(11,2)){printDoubleAtWidthDisplay2(current_mashTemp, 3, 'C');}
+  if(menuItemPrintableDisp2(11,3)){printDoubleAtWidthDisplay2(DutyCycle/4095.0 * 100.0, 3, '%');}
+  if(menuItemPrintableDisp2(11,4)){printInt32_tAtWidthDisplay2(current_airTemp, 3, 'C');}
   display2.sendBuffer();
   display2.clearBuffer();
 }
 
-void setupWiFi() //Homeassistant
+void setupWiFi() // Home Assistant
 {
+  WiFi.mode(WIFI_STA);
+  WiFi.setSleep(false);              // IMPORTANT for stability
   WiFi.begin(privates.ssid, privates.pass);
-  Serial.print("\nConnecting to ");
-  Serial.print(privates.ssid);
 
-  while(WiFi.status() != WL_CONNECTED)
+  Serial.print("Connecting to WiFi");
+
+  unsigned long t0 = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - t0 < 10000)
   {
     delay(100);
     Serial.print(".");
   }
-  Serial.print("\nConnected to ");
-  Serial.println(privates.ssid);
+
+  if (WiFi.status() == WL_CONNECTED)
+  {
+    Serial.print("\nWiFi connected, IP: ");
+    Serial.println(WiFi.localIP());
+    digitalWrite(ledWifiPin, LOW);
+  }
+  else
+  {
+    Serial.println("\nWiFi failed, will retry in loop()");
+    digitalWrite(ledWifiPin, HIGH);
+  }
 }
 
-void setupMQTT() //Homeassistant
+
+void setupMQTT() // Home Assistant
 {
   client.setServer(privates.broker, 1883);
   client.setCallback(callback);
-  client.connect("Reflow_Hot_Plate", privates.brokerUser, privates.brokerPass);
-  while (!client.connected())
+  client.setKeepAlive(30);   // IMPORTANT
+
+  unsigned long t0 = millis();
+  while (!client.connected() && millis() - t0 < 10000)
   {
-    delay(100);
-    Serial.print(".");
+    Serial.print("Connecting to MQTT... ");
+
+    if (client.connect(
+          "MashMachine",           // client ID
+          privates.brokerUser,
+          privates.brokerPass,
+          "esp32/status",           // LWT topic
+          0,                        // QoS
+          true,                     // retained
+          "offline"                 // LWT payload
+        ))
+    {
+      Serial.println("connected");
+      publishWifiMqttStatus();
+    }
+    else
+    {
+      Serial.print("failed, rc=");
+      Serial.println(client.state());
+      delay(2000);
+    }
+
+    digitalWrite(ledMqttPin, client.connected() ? LOW : HIGH);
   }
+
   Serial.println("MQTT setup complete");
 }
 
-void reconnectWiFi()  //Homeassistant
+
+void reconnectWiFi() //Homeassistant
 {
   static unsigned long lastAttempt = 0;
-  if (millis() - lastAttempt > 5000) { // försök var 5:e sekund
-    lastAttempt = millis();
-    WiFi.begin(privates.ssid, privates.pass);
-    Serial.println("Trying to reconnect WiFi...");
+
+  if (WiFi.status() == WL_CONNECTED) {
+    digitalWrite(ledWifiPin, LOW);
+    return;
   }
+
+  if (millis() - lastAttempt > 5000) {
+    lastAttempt = millis();
+
+    Serial.println("Trying to reconnect WiFi...");
+    WiFi.mode(WIFI_STA);
+    WiFi.setSleep(false);
+    WiFi.begin(privates.ssid, privates.pass);
+  }
+
+  digitalWrite(ledWifiPin, HIGH);
 }
 
-void reconnectMQTT()  //Homeassistant
+void reconnectMQTT() //Homeassistant
 {
+  if (WiFi.status() != WL_CONNECTED) return;
+
   static unsigned long lastAttempt = 0;
-  if (millis() - lastAttempt > 3000) { // försök var 3:e sekund
+
+  if (client.connected()) {
+    digitalWrite(ledMqttPin, LOW);
+    return;
+  }
+
+  if (millis() - lastAttempt > 5000) { 
+    //blocking code when trying to reconnect MQTT
+    //istället för "PubSubClient" använd "AsyncMqttClient" för icke-blockerande
     lastAttempt = millis();
     Serial.println("Trying to reconnect MQTT...");
-    if (client.connect("Reflow_Hot_Plate", privates.brokerUser, privates.brokerPass)) {
+
+    client.setKeepAlive(30);
+
+    if (client.connect(
+          "MashMachine",
+          privates.brokerUser,
+          privates.brokerPass,
+          "esp32/status",  // LWT topic
+          0,
+          true,
+          "offline"
+        ))
+    {
       Serial.println("MQTT connected!");
+      publishWifiMqttStatus();
     }
+  }
+
+  digitalWrite(ledMqttPin, HIGH);
+}
+
+// void publishFloat(const char* topic, float value, int decimals = 1) {
+//   //int "%d", float "%f", bool "%s", obs vikitgt!
+//   char format[10];
+//   snprintf(format, sizeof(format), "%%.%df", decimals);
+//   snprintf(messages, sizeof(messages), format, value);
+//   client.publish(topic, messages);
+// }
+
+// void publishString(const char* topic, String value) {
+//   snprintf(messages, sizeof(messages), "%s", value);
+//   client.publish(topic, messages);
+// }
+
+void publishWifiMqttStatus()
+{
+  client.publish("esp32/status", "online", true);
+
+  if (client.connected())
+  {
+    client.publish(
+      "esp32/wifi",
+      WiFi.status() == WL_CONNECTED ? "online" : "offline",
+      true
+    );
   }
 }
 
-void publishMessage() //Homeassistant
+void publishMessage() 
 {
-    publishFloat(privates.topicMashTemp, current_mashTemp);
-    publishFloat(privates.topicTimePassed, passedTimeS/60.0);
-    publishFloat(privates.topicTargetTemp, settings.targetTemp);
-    publishFloat(privates.topicDutyCycle, DutyCycle/4096.0 * 100.0);
-    publishFloat(privates.topicKp, settings.Kp_element);
-    publishFloat(privates.topicKi, settings.Ki_element);
+  StaticJsonDocument<512> doc;
+
+  // --- Core readings ---
+  doc["mashTemp"]      = roundTo(current_mashTemp, 6);  // 3 decimal
+  doc["airTemp"]       = roundTo(current_airTemp, 2);   // 2 decimal
+  doc["timePassed"]    = roundTo(passedTimeS / 60.0f, 1);
+
+  // --- Setpoint ---
+  doc["targetTemp"]    = settings.targetTemp;
+
+  // --- Power / control ---
+  doc["dutyCycle"]     = roundTo(DutyCycle / 4095.0f * 100.0f, 2);
+  doc["powerIn"]       = roundTo(DutyCycle / 4095.0f * 2500.0f, 6); // integer watts
+
+  // --- Boolean states (REAL booleans) ---
+  doc["pumpOn"]        = settings.pump;
+  doc["POnE"]          = settings.POnE_mash;
+  doc["hopsAlarm"]     = hopsAlarm;
+  doc["waterDetected"] = waterDetected;
+
+  // --- PID parameters ---
+  doc["kp"]            = settings.Kp_mash;
+  doc["ki"]            = settings.Ki_mash;
+  doc["heatLoss"]      = settings.k_heatLoss;
+
+  // --- Filters (rounded for readability) ---
+  doc["filterTemp"]    = roundTo(settings.filter_adc1, 2);
+  doc["filterDC"]      = roundTo(settings.filterDC, 2);
+
+  // --- Serialize and publish ---
+  char buffer[512];
+  size_t n = serializeJson(doc, buffer);
+  client.publish("mashTun/state", buffer, n);
+
+  if (!writeInflux(current_mashTemp, DutyCycle / 4095.0f * 2500.0f)) {
+  Serial.println("Influx write failed");
 }
 
-void publishFloat(const char* topic, float value) {
-  //int "%d", float "%f", bool "%s", obs vikitgt!
-  snprintf(messages, sizeof(messages), "%.1f", value); // 2 decimal places
-  client.publish(topic, messages);
 }
 
-void publishString(const char* topic, String value) {
-  snprintf(messages, sizeof(messages), "%s", value);
-  client.publish(topic, messages);
+bool writeInflux(float mashTemp, float powerW)
+{
+  if (WiFi.status() != WL_CONNECTED)
+    return false;
+
+  HTTPClient http;
+  http.begin(privates.influxURL);
+  http.addHeader("Authorization", String("Token ") + privates.influxToken);
+  http.addHeader("Content-Type", "text/plain");
+
+  String line =
+    "mashtun,source=esp32 "
+    "mashtemp=" + String(mashTemp, 3) +
+    ",power="   + String(powerW, 1);
+
+  int code = http.POST(line);
+  Serial.print("Influx HTTP code: ");
+  Serial.println(code);
+  http.end();
+
+  return (code == 204);
 }
+
+
+
+
+// void publishMessage() //Homeassistant
+// {
+//   // Serial.print("current_mashTemp: ");
+//   // Serial.print(current_mashTemp, 1);
+//   // Serial.print(", filtered: ");
+//   // Serial.println(filtered, 1);
+
+//   publishFloat(privates.topicMashTemp, current_mashTemp);
+//   publishFloat(privates.topicAirTemp, current_airTemp);
+//   publishFloat(privates.topicTimePassed, passedTimeS/60.0);
+//   publishFloat(privates.topicTargetTemp, settings.targetTemp);
+//   publishFloat(privates.topicDutyCycle, DutyCycle/4095.0 * 100.0);
+//   publishFloat(privates.topicPowerIn,   DutyCycle/4095.0 * 2500.0);
+//   publishString(privates.topicPumpOn, settings.pump ? "ON" : "OFF");
+//   publishFloat(privates.topicKp, settings.Kp_mash);
+//   publishFloat(privates.topicKi, settings.Ki_mash);
+//   publishFloat(privates.topicHeatLoss, settings.k_heatLoss);
+//   publishString(privates.topicPOnE, settings.POnE_mash ? "ON" : "OFF");
+//   publishFloat(privates.topicfilterTemp, settings.filter_adc1);
+//   publishFloat(privates.topicfilterDC, settings.filterDC);
+//   publishString(privates.topicHopsAlarm, hopsAlarm ? "ON" : "OFF");
+//   publishString(privates.topicWaterDetected, waterDetected ? "YES" : "NO");
+// }
+
 
 void callback(char* topic, byte* payload, unsigned int length) //Homeassistant
 {
@@ -971,19 +1401,95 @@ void callback(char* topic, byte* payload, unsigned int length) //Homeassistant
   }
 }
 
-float convertRawToCelsius(float raw) {
-
-  filtered = Filter(raw, filtered);
-  filtered = constrain(map((int)filtered, settings.RawLow, settings.RawHigh, 0, 4095), 0, 4095);
-  float vOut = (filtered / 4095.0) * 3.3;    
-  float rNTC = (R_ref * vOut) / (3.3 - vOut); 
+double convertRawToCelsius(double vOut) {
+  double rNTC = (R_ref * vOut) / (3.3 - vOut); 
   // Beta-formeln
-  float invT = (1.0 / T_0) + (1.0 / BETA) * log(rNTC / R_NTC);
-  float T = 1.0 / invT;    // Kelvin
-  return T - 273.15;       // Celsius
+  double invT = (1.0 / T_0) + (1.0 / BETA) * log(rNTC / R_NTC);
+  double T = 1.0 / invT;    // Kelvin
+  T -= 273.15;             // Celsius
+  T = map(T, settings.callibrationCold, settings.callibrationHot, 0.0, 100.0);
+  T = constrain(T, 0.0, 100.0);
+  // Serial.print(", Temp_C: ");
+  // Serial.println(T, 1);
+  return T;       // Celsius
 }
 
-float Filter(float New, float Current) //Moisture sensor
+double Filter(double New, double Current, double alpha) //Moisture sensor
 {
-  return (1.0 - settings.filterWeight/100.0) * New + settings.filterWeight/100.0 * Current;
+  return (1.0 - alpha) * New + alpha * Current;
+}
+
+double map(double x, double in_min, double in_max, double out_min, double out_max) {
+
+  return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
+}
+
+float roundTo(float value, int decimals) {
+  float multiplier = powf(10.0f, decimals);
+  return roundf(value * multiplier) / multiplier;
+}
+float computeARX(float u0){
+
+  u[0] = u0;
+  // Compute ARX output
+  y[0] = - a1 * y[1] - a2 * y[2] + b0 * u[0] + b1 * u[1] + b2 * u[2];
+
+  // Shift past values
+  y[2] = y[1];
+  y[1] = y[0];
+  u[2] = u[1];
+  u[1] = u[0];
+
+  return y[0];
+}
+
+float readADCwithAutoGain(Adafruit_ADS1115 &adc, int channel) {
+    // Step 1: rough read with lowest gain
+    adc.setGain(GAIN_TWOTHIRDS);
+    adc.startADCReading(ADS1X15_REG_CONFIG_MUX_SINGLE_0 + channel, false);
+    while(!adc.conversionComplete());
+    int16_t raw = adc.getLastConversionResults();
+
+    // convert voltage using TWOTHIRDS gain
+    float voltage = raw * 0.0001875;  // ±6.144V -> 0.1875 mV/bit
+
+    // Step 2: choose gain based on voltage
+    adsGain_t chosenGain;
+    float lsb = 0.0001875; // default for TWOTHIRDS
+
+    if (voltage < 0.20) {
+        chosenGain = GAIN_SIXTEEN; // ±0.256V
+        lsb = 0.0000078125;        // 7.8125 uV/bit
+    }
+    else if (voltage < 0.40) {
+        chosenGain = GAIN_EIGHT;   // ±0.512V
+        lsb = 0.000015625;
+    }
+    else if (voltage < 0.85) {
+        chosenGain = GAIN_FOUR;    // ±1.024V
+        lsb = 0.00003125;
+    }
+    else if (voltage < 1.80) {
+        chosenGain = GAIN_TWO;     // ±2.048V
+        lsb = 0.0000625;
+    }
+    else if (voltage < 3.5) {
+        chosenGain = GAIN_ONE;     // ±4.096V
+        lsb = 0.000125;
+    }
+    else {
+        chosenGain = GAIN_TWOTHIRDS; // ±6.144V
+        lsb = 0.0001875;
+    }
+
+    // Step 3: read again with correct gain
+    adc.setGain(chosenGain);
+    adc.startADCReading(ADS1X15_REG_CONFIG_MUX_SINGLE_0 + channel, false);
+    while(!adc.conversionComplete());
+    raw = adc.getLastConversionResults();
+
+    // Now raw * lsb gives correct voltage
+    voltage = raw * lsb;
+
+    return voltage; // or return voltage if you prefer
 }

@@ -17,23 +17,24 @@
  *    The parameters specified here are those for for which we can't set up
  *    reliable defaults, so we need to have the user set them.
  ***************************************************************************/
-PID::PID(double* Input, double* Output, double* Setpoint,
+PID::PID(double* Input, double* Output, double* Setpoint, double* current_airTemp,
         double Kp, double Ki, double Kd, int POn, int ControllerDirection)
 {
-    myOutput = Output;
-    myInput = Input;
-    mySetpoint = Setpoint;
-    inAuto = false;
+   myOutput = Output;
+   myInput = Input;
+   mySetpoint = Setpoint;
+   myCurrent_airTemp = current_airTemp;
+   inAuto = false;
 
-    PID::SetOutputLimits(0, 4095);				//default output limit corresponds to
-												//the arduino pwm limits
+   PID::SetOutputLimits(0, 4095);				//default output limit corresponds to
+                                 //the arduino pwm limits
 
-    SampleTime = 10;							//default Controller Sample Time is 0.1 seconds
+   SampleTime = 10;							//default Controller Sample Time is 0.1 seconds
 
-    PID::SetControllerDirection(ControllerDirection);
-    PID::SetTunings(Kp, Ki, Kd, POn);
+   PID::SetControllerDirection(ControllerDirection);
+   PID::SetTunings(Kp, Ki, Kd, POn);
 
-    lastTime = millis()-SampleTime;
+   lastTime = millis()-SampleTime;
 }
 
 /*Constructor (...)*********************************************************
@@ -41,9 +42,9 @@ PID::PID(double* Input, double* Output, double* Setpoint,
  *    to use Proportional on Error without explicitly saying so
  ***************************************************************************/
 
-PID::PID(double* Input, double* Output, double* Setpoint,
+PID::PID(double* Input, double* Output, double* Setpoint, double* current_airTemp,
         double Kp, double Ki, double Kd, int ControllerDirection)
-    :PID::PID(Input, Output, Setpoint, Kp, Ki, Kd, P_ON_E, ControllerDirection)
+    :PID::PID(Input, Output, Setpoint, current_airTemp, Kp, Ki, Kd, P_ON_E, ControllerDirection)
 {
 
 }
@@ -66,30 +67,41 @@ bool PID::Compute()
       double input = *myInput;
       double error = *mySetpoint - input;
       double dInput = (input - lastInput);
-      outputSum+= (ki * error);
 
+      Q_ff = k_heatLoss * ( *mySetpoint - *myCurrent_airTemp);
+      //----------------------------------------------
+      //Ki
+      outputSum += (ki * error);
+      //----------------------------------------------
+      //Kp
       /*Add Proportional on Measurement, if P_ON_M is specified*/
-      if(!pOnE) outputSum-= kp * dInput;
 
-      if(outputSum > outMax) outputSum= outMax;
-      else if(outputSum < outMin) outputSum= outMin;
+      if(!pOnE) outputSum -= kp * dInput;
+
+      if(outputSum > outMax) outputSum = outMax;
+      else if(outputSum < outMin) outputSum = outMin;
 
       /*Add Proportional on Error, if P_ON_E is specified*/
 	   double output;
+      // Serial.print(", pOnE: ");
+      // Serial.println(pOnE);
       if(pOnE) output = kp * error;
       else output = 0;
-
-      /*Compute Rest of PID Output*/
+      //----------------------------------------------
+      //Kd
       output += outputSum - kd * dInput;
+      //----------------------------------------------
+      // Add feedforward term
+      output += Q_ff;
 
-	    if(output > outMax) output = outMax;
+	   if(output > outMax) output = outMax;
       else if(output < outMin) output = outMin;
-	    *myOutput = output;
+	   *myOutput = output;
 
       /*Remember some variables for next time*/
       lastInput = input;
       lastTime = now;
-	    return true;
+	   return true;
    }
    else return false;
 }
@@ -204,11 +216,16 @@ void PID::SetControllerDirection(int Direction)
 {
    if(inAuto && Direction !=controllerDirection)
    {
-	    kp = (0 - kp);
+	   kp = (0 - kp);
       ki = (0 - ki);
       kd = (0 - kd);
    }
    controllerDirection = Direction;
+}
+
+void PID::SetHeatLossCoefficient(double k_heatLossCoefficient)
+{
+  k_heatLoss = k_heatLossCoefficient;
 }
 
 /* Status Funcions*************************************************************
