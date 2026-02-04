@@ -29,7 +29,7 @@ PID::PID(double* Input, double* Output, double* Setpoint, double* current_airTem
    PID::SetOutputLimits(0, 4095);				//default output limit corresponds to
                                  //the arduino pwm limits
 
-   SampleTime = 10;							//default Controller Sample Time is 0.1 seconds
+   SampleTime = 500;							//default Controller Sample Time is 0.5 seconds
 
    PID::SetControllerDirection(ControllerDirection);
    PID::SetTunings(Kp, Ki, Kd, POn);
@@ -68,7 +68,7 @@ bool PID::Compute()
       double error = *mySetpoint - input;
       double dInput = (input - lastInput);
 
-      Q_ff = k_heatLoss * ( *mySetpoint - *myCurrent_airTemp);
+      Q_ff = k_heatLoss * (input - *myCurrent_airTemp);  //Q_ff = k_heatLoss * ( *mySetpoint - *myCurrent_airTemp); 
       //----------------------------------------------
       //Ki
       outputSum += (ki * error);

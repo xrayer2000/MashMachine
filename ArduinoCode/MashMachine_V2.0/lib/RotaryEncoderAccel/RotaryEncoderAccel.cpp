@@ -38,11 +38,8 @@ RotaryEncoderAccel::RotaryEncoderAccel(int pin1, int pin2) {
   _pin2 = pin2;
 
   // Setup the input pins
-  pinMode(pin1, INPUT);
-  digitalWrite(pin1, HIGH);   // turn on pullup resistor
-
-  pinMode(pin2, INPUT);
-  digitalWrite(pin2, HIGH);   // turn on pullup resistor
+  pinMode(pin1, INPUT_PULLUP);
+  pinMode(pin2, INPUT_PULLUP);
 
   // when not started in motion, the current state of the encoder should be 3
   _oldState = 3;
@@ -163,14 +160,15 @@ float RotaryEncoderAccel::getRPM()
     //   Serial.println();
     // }
 
+    int threshold = 4;
     switch (_direction) {
       case Direction::CLOCKWISE:
         rpm = 60000.0 / ((float)(t * 20 * 10));
-        if(rpm < 1.0) rpm = 1;
+        if(rpm < threshold) rpm = 1;
           return rpm;
       case Direction::COUNTERCLOCKWISE:
         rpm = -60000.0 / ((float)(t * 20 * 10));
-        if(rpm > -1.0) rpm = -1;
+        if(rpm > - threshold) rpm = -1;
           return rpm;
     }  
     
