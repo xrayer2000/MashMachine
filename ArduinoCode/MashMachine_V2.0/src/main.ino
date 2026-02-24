@@ -19,11 +19,12 @@
 #include <Privates.h> //Homeassistant 
 #include <ArduinoJson.h> //Homeassistant
 #include <math.h> //math
-#include <MAX6675.h> //temperatur
+#include <Adafruit_MAX31865.h> //temperatur
 #include <OneWire.h> //temperatur
 #include <DallasTemperature.h> //temperatur
 #include <Adafruit_ADS1X15.h> //ADC
 #include <HTTPClient.h>      //InfluxDB
+#include <time.h> //time for InfluxDB
 
 //-----------------------------------------------------------------------
 //Model och enums
@@ -38,23 +39,22 @@ enum ModelID { MODEL_50, MODEL_65, MODEL_75 };
 #define ledOnPin 14 //           orange LED
 #define ledWaterDetectedPin 4 // red LED
 #define ledWifiPin 17 //         blue LED
-#define ledMqttPin 23 //         yellow LED
+//#define ledMqttPin 23 //         yellow LED
 //rotary encoder
-#define outputA 32
-#define outputB 33
+#define outputA 32//32
+#define outputB 33//33
 #define confirmBtnPin 25 // pin 25 ESP32 - ok
-// // MAX6675 Thermocouple
-#define MAX6675_CS 5 //MAX6675 chip select
-#define MAX6675_SO 19 //MAX6675 serial out
-#define MAX6675_SCK 18 //MAX6675 serial clock
-//NTC Thermistor
-//#define NTC_PIN 34 //adc1 ads1115
+// // MAX31865 PT100
+#define MAX31865_CS 5 //MAX31865 chip select
+#define MAX31865_SO 19 //MAX31865 serial out
+#define MAX31865_SCK 18 //MAX31865 serial clock
+#define MAX31865_SI 23 //MAX31865 serial in
 //Pump
-#define pumpPin 27 //pin 27 ESP32 - Pump
+#define pumpPin 27 //ESP32 - Pump
 //Larm
-#define alarmPin 13 // ESP32 - alarm
+#define alarmPin 13//13 // ESP32 - alarm
 //
-#define ONE_WIRE_BUS 16 //ESP32 - OneWire bus
+#define ONE_WIRE_BUS 16// 16 //ESP32 - OneWire bus
 //Water indicator
 //#define waterDetectedPin adc2 ads1115
 #define waterDetectedPin 34
@@ -84,14 +84,14 @@ char mqttpayload [mqttpayloadSize] = {'\0'};
 String mqtttopic;
 //-----------------------------------------------------------------------
 //rotary encoder
-RotaryEncoderAccel encoder(outputA, outputB);  // GPIO16 och GPIO17 på ESP32
+RotaryEncoderAccel encoder(outputA, outputB);  // GPIO32 och GPIO33 på ESP32
 // ISR för båda pins, som anropas vid ändring (rising/falling)
 void IRAM_ATTR handleInterrupt() {
   encoder.tick();
 }
 //-----------------------------------------------------------------------
-//Buttons
-PressButton btnOk(confirmBtnPin, 20); //debounce
+// Buttons
+PressButton btnOk(confirmBtnPin, 10); //debounce (ISR-attached inside library)
 //-----------------------------------------------------------------------
 //Menu structure
 enum pageType{
@@ -230,17 +230,31 @@ float adc1_raw_volt = 1.5;
 float filteredAdc1_volt = adc1_raw_volt;
 float adcVoltRange = 0.0;
 unsigned long lastReadTime = 0;
-const unsigned long readInterval = 250;  // ms
+const unsigned long readInterval = 1000;  // ms
 //-----------------------------------------------------------------------
 double passedTime, previousPassedTime1, previousPassedTime2 = 0;
 bool initPage = true;
 bool changeValue = false;
 bool changeValues [20];
 //-----------------------------------------------------------------------
-//MAX6675 Thermocouple
-MAX6675 thermoCouple(MAX6675_CS, MAX6675_SO, MAX6675_SCK);
-double tempTC = 0;
-double filteredTempTC = 0;
+//MAX31865 PT100
+Adafruit_MAX31865 PT100(MAX31865_CS, MAX31865_SI, MAX31865_SO, MAX31865_SCK);
+double tempPT100 = 0;
+double filteredTempPT100 = 0;
+// ====== CONFIG ======
+#define RREF      435.8
+#define RNOMINAL  100.0
+// ---- Replace these with your measured values ----
+double CAL_T1  = 7.1;     // Real temperature point 1 (ice bath)
+double CAL_T2  = 97.0;   // Real temperature point 2 (boiling water)
+
+double CAL_M1  = 7.5;     // Measured temperature at T1
+double CAL_M2  = 93.5;   // Measured temperature at T2
+// ================================================
+// Calibration coefficients (computed automatically)5
+double a;
+double b;
+
 //-----------------------------------------------------------------------
 //Dallas Temperature
 OneWire oneWire(ONE_WIRE_BUS);
@@ -268,6 +282,11 @@ void setup() {//=================================================SETUP==========
 
   // WiFi.disconnect(true);
   // WiFi.mode(WIFI_OFF);
+
+  PT100.begin(MAX31865_3WIRE);
+   // Calculate calibration constants
+  a = (CAL_T2 - CAL_T1) / (CAL_M2 - CAL_M1);
+  b = CAL_T1 - a * CAL_M1;
 
   //setupADC
   if (!adc.begin()) Serial.println("ADS1115 not found");
@@ -310,7 +329,7 @@ void setup() {//=================================================SETUP==========
   pinMode(ledOnPin, OUTPUT);
   pinMode(ledWaterDetectedPin, OUTPUT);
   pinMode(ledWifiPin, OUTPUT);
-  pinMode(ledMqttPin, OUTPUT);
+  // pinMode(ledMqttPin, OUTPUT);
   pinMode(confirmBtnPin, INPUT_PULLUP);
   pinMode(outputA,INPUT_PULLUP);
   pinMode(outputB,INPUT_PULLUP);
@@ -319,7 +338,7 @@ void setup() {//=================================================SETUP==========
   pinMode(alarmPin, OUTPUT);
   pinMode(waterDetectedPin, INPUT_PULLUP);
 
-  // Koppla interrupt på båda encoder-pins till samma ISR
+  // Initialize encoder interrupts (confirm button interrupt disabled)
   attachInterrupt(digitalPinToInterrupt(outputA), handleInterrupt, CHANGE);
   attachInterrupt(digitalPinToInterrupt(outputB), handleInterrupt, CHANGE);
 
@@ -342,24 +361,25 @@ void setup() {//=================================================SETUP==========
   EEPROM.begin(sizeof(settings));
   sets_Load();
 
-  //Thermocouple
-  SPI.begin();
-  thermoCouple.begin();
-  thermoCouple.setSPIspeed(4000000);
-  thermoCouple.setOffset(0); 
-  if (thermoCouple.read() == STATUS_OK) {
-    tempTC = thermoCouple.getCelsius();
-  } 
-  filteredTempTC = tempTC;
-  
+  //NTC Temperature probe
   adc1_raw_volt = readADCwithAutoGain(adc, 0);
   filteredAdc1_volt = adc1_raw_volt;
 
   Temp_C = convertRawToCelsius(filteredAdc1_volt);
   Temp_C = roundTo(Temp_C, 2); // Round to 2 decimal place
 
-  current_mashTemp = Temp_C;
-  previous_mashTemp = Temp_C;
+  //PT100 Temperature probe
+  PT100.readRTD();
+  double rawTemp = PT100.temperature(RNOMINAL, RREF);
+
+  // Apply two-point calibration
+  double calibratedTemp = a * rawTemp + b;
+  calibratedTemp = roundTo(calibratedTemp, 3); // Round to 3 decimal places
+  tempPT100 = calibratedTemp;
+  filteredTempPT100 = calibratedTemp;
+
+  current_mashTemp = tempPT100; //Temp_C;
+  previous_mashTemp = tempPT100; //Temp_C;
 
   setupWiFi(); //Home assistant
   setupMQTT(); //Home assistant
@@ -371,6 +391,8 @@ void setup() {//=================================================SETUP==========
       }
     }
   });
+
+  setupTime(); //NTP time for InfluxDB
 
   // PID_mashTemp.SetTunings(settings.Kp_mash, settings.Ki_mash, 0, settings.POnE_mash ? P_ON_E : P_ON_M); //P_ON_M
   // PID_mashTemp.SetMode(AUTOMATIC);
@@ -489,6 +511,14 @@ void loop() { //=================================================LOOP===========
   if(detectedRotation)
   {
     lastEditTime = millis();
+  }
+  // Consume confirm button timestamp from library ISR and update touch timers
+  {
+    uint32_t t = btnOk.consumeTouchMs();
+    if (t != 0) {
+      timeLastTouched = t/1000.0/60.0;
+      lastEditTime = t;
+    }
   }
 
   // === WiFi reconnect ===
@@ -1202,6 +1232,15 @@ void updateSensorValues() {
   {
     lastReadTime = currentTime;
 
+    // PT100 Temperature reading and conversion
+    double rawTemp = PT100.temperature(RNOMINAL, RREF);
+
+    // Apply two-point calibration
+    double calibratedTemp = a * rawTemp + b;
+    filteredTempPT100 = Filter(calibratedTemp, filteredTempPT100, settings.filter_adc1, 100.0f);
+    tempPT100 = roundTo(filteredTempPT100, 3); // Round to 3 decimal places
+
+    //NTC Temperature reading and conversion
     adcVoltRange = adc.getFsRange();
     adc1_raw_volt = readADCwithAutoGain(adc, 0);
 
@@ -1224,17 +1263,12 @@ void updateSensorValues() {
 
     waterDetected = !digitalRead(waterDetectedPin);
 
-    if (thermoCouple.read() == STATUS_OK) {
-      tempTC = thermoCouple.getCelsius();
-    } 
-
-    filteredTempTC = Filter(tempTC, filteredTempTC, settings.filter_adc1, 100.0f);
-
-    Serial.printf("ADC1 filtered: %.3f C, filteredTempTC: %.3f C, kLoss_W_per_degC: %.3f, Active Model: %s\n",
-                  Temp_C,
-                  filteredTempTC,
-                  mashCtrlLQG.model_->kLoss_W_per_degC,
-                  activeModel == MODEL_50 ? "50C" : activeModel == MODEL_65 ? "65C" : "75C");
+    // Serial.printf("tempPT100: %.3f C, ADC1 filtered: %.3f C, kLoss_W_per_degC: %.3f, Active Model: %s\n",
+                    
+    //   tempPT100,
+    //   Temp_C,
+    //   mashCtrlLQG.model_->kLoss_W_per_degC,
+    //   activeModel == MODEL_50 ? "50C" : activeModel == MODEL_65 ? "65C" : "75C");
 
     // Serial.print("Voltage adc1: ");
     // Serial.print(adc1_raw_volt, 4);
@@ -1267,7 +1301,7 @@ void updateSensorValues() {
     // Serial.println(", Q_ff: " + String(PID_mashTemp.Q_ff));
 
     previous_mashTemp = current_mashTemp;
-    current_mashTemp = Temp_C;
+    current_mashTemp = filteredTempPT100; //Temp_C;
   }
 
 }
@@ -1350,7 +1384,7 @@ void setupMQTT() // Home Assistant
       delay(2000);
     }
 
-    digitalWrite(ledMqttPin, client.connected() ? LOW : HIGH);
+    // digitalWrite(ledMqttPin, client.connected() ? LOW : HIGH);
   }
 
   Serial.println("MQTT setup complete");
@@ -1384,10 +1418,10 @@ void reconnectMQTT() //Homeassistant
 
   static unsigned long lastAttempt = 0;
 
-  if (client.connected()) {
-    digitalWrite(ledMqttPin, LOW);
-    return;
-  }
+  // if (client.connected()) {
+  //   digitalWrite(ledMqttPin, LOW);
+  //   return;
+  // }
 
   if (millis() - lastAttempt > 5000) { 
     //blocking code when trying to reconnect MQTT
@@ -1412,7 +1446,7 @@ void reconnectMQTT() //Homeassistant
     }
   }
 
-  digitalWrite(ledMqttPin, HIGH);
+  // digitalWrite(ledMqttPin, HIGH);
 }
 
 // void publishFloat(const char* topic, float value, int decimals = 1) {
@@ -1442,17 +1476,15 @@ void publishWifiMqttStatus()
   }
 }
 
-void publishMessage() 
+void publishMessage() //Home Assistant only
 {
   StaticJsonDocument<512> doc;
 
   // --- Core readings ---
-  doc["mashTemp"]      = roundTo(current_mashTemp, 2);  // 3 decimal
-  doc["mashTempTC"] = roundTo(filteredTempTC, 2); // 2 decimal
+  doc["mashTempPT100"] = roundTo(current_mashTemp, 3);  // 3 decimal
+  doc["mashTemp"]      = roundTo(Temp_C, 2); // 2 decimal
   doc["airTemp"]       = roundTo(current_airTemp, 2);   // 2 decimal
   doc["timePassed"]    = roundTo(passedTimeS / 60.0f, 1);
-  doc["filteredAdc1_volt"] = roundTo(filteredAdc1_volt, 3);
-  doc["adcVoltRange"] = roundTo(adcVoltRange, 3);
 
   // --- Setpoint ---
   doc["targetTemp"]    = settings.targetTemp;
@@ -1480,14 +1512,13 @@ void publishMessage()
   size_t n = serializeJson(doc, buffer);
   client.publish("mashTun/state", buffer, n);
 
+  //InfluxDB
   if (!writeInflux(current_mashTemp, DutyCycle * PWM_to_W, current_airTemp)) {
   Serial.println("Influx write failed");
   }
-
-
 }
 
-bool writeInflux(float mashTemp, float powerW, float current_airTemp)
+bool writeInflux(float mashTemp, float powerW, float current_airTemp) //Only InfluxDB
 {
   if (WiFi.status() != WL_CONNECTED)
     return false;
@@ -1502,7 +1533,8 @@ bool writeInflux(float mashTemp, float powerW, float current_airTemp)
     "mashtemp=" + String(mashTemp, 3) +
     ",power="   + String(powerW, 1) +
     ",airtemp=" + String(current_airTemp, 2) +
-    " " + String(millis()) + "\n";
+    ",targettemp=" + String(settings.targetTemp, 1) +
+    " " + String((uint64_t)time(nullptr) * 1000000000ULL) + "\n";
 
   int code = http.POST(line);
   // Serial.print("Influx HTTP code: ");
@@ -1510,6 +1542,15 @@ bool writeInflux(float mashTemp, float powerW, float current_airTemp)
   http.end();
 
   return (code == 204);
+}
+
+void setupTime() {
+  configTime(0, 0, "pool.ntp.org", "time.nist.gov");
+
+  time_t now;
+  while ((now = time(nullptr)) < 100000) {
+    delay(500);
+  }
 }
 
 void callback(char* topic, byte* payload, unsigned int length) //Homeassistant
