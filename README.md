@@ -1,150 +1,118 @@
-# MashMachine
 
-Where:
+Where
 
-- x_k : system states (thermal dynamics)  
-- u_k : input (heater power)  
-- y_k : measured temperature  
-- v_k : measurement noise  
+x_k is the internal state describing the thermal dynamics  
+u_k is the input, corresponding to heater power  
+y_k is the measured temperature  
+v_k represents measurement noise  
 
----
-
-## 🎯 Control Design — LQG
-
-The control strategy is based on **LQG (Linear Quadratic Gaussian)**:
-
-- LQR → optimal state feedback  
-- Kalman filter → optimal state estimation  
-
-This enables:
-
-- Control under measurement noise  
-- Use of internal state estimates  
-- Systematic tuning via weighting matrices  
+The model is obtained from experimental data rather than assumed.
 
 ---
 
-## 🌡️ Measurement System
+## Control (LQG)
 
-### Transition: NTC → PT100
+The controller is based on LQG.
 
-The system originally used an NTC thermistor, but this was replaced due to fundamental limitations.
+An LQR formulation is used for state feedback, and a Kalman filter is used for state estimation.
 
-### Issues with NTC
+This allows the controller to operate on an estimate of the internal state despite noisy measurements.
 
-- Strong nonlinearity  
-- Calibration required **three accurate reference points** (temperature + resistance)  
-- Sensitive to noise  
-- Error amplification through nonlinear mapping  
-
-Observed in practice:
-
-- Large deviation between measured and actual temperature  
-- Time-consuming and unreliable calibration process  
+The focus has been on achieving stable behaviour on the real system rather than optimal performance in simulation.
 
 ---
 
-### PT100 Implementation
+## System Identification
 
-The system was upgraded to a **PT100 RTD**, providing:
+The model is obtained through experiments on the physical system.
 
-- Near-linear response  
-- Higher accuracy  
-- Improved stability  
+Step response and sinusoidal excitation are used to capture the dynamics.  
+From this data, a state-space model is estimated and used directly for controller design.
 
-Result:
-
-- Simplified calibration (gain + offset)  
-- Reliable measurements suitable for model-based control  
+A reasonable model is essential. Without it, the controller has no meaningful foundation.
 
 ---
 
-## 🔧 Signal Conditioning
+## Measurement System
 
-- Analog front-end for PT100 measurement  
-- Noise reduction before ADC  
-- Stable input for state estimation  
+The system initially used an NTC thermistor. This approach was abandoned due to calibration difficulty and unreliable results.
 
----
+### NTC
 
-## ⚠️ Hardware Reliability
+The NTC sensor is strongly nonlinear and requires at least three reliable calibration points consisting of temperature and resistance.
 
-Key lessons implemented:
+In practice, this introduced several problems:
 
-- Common ground across all subsystems is mandatory  
-- Series resistors (~220Ω) on control signals  
-- Protection against voltage transients (diodes, bleeder resistors)  
+The calibration process was sensitive to noise  
+Small resistance errors resulted in large temperature errors  
+It was difficult to obtain consistent and accurate reference points  
 
-Previous hardware failures were traced to grounding issues.
+This led to significant deviations between measured and actual temperature.
 
 ---
 
-## 🧪 System Characteristics
+### PT100
 
-- Slow thermal dynamics  
-- Significant inertia  
-- Measurement noise  
+The sensor was replaced with a PT100.
 
-Implication:
+The main reasons were:
 
-> Control performance is fundamentally limited by system physics, not controller complexity.
+Near linear behaviour  
+Simpler calibration, essentially gain and offset  
+More stable and predictable measurements  
 
----
-
-## 🧠 Engineering Insight
-
-The main challenge was not controller design, but:
-
-- Obtaining a reliable model  
-- Ensuring measurement quality  
-- Handling real-world non-idealities  
+This change significantly improved both identification and state estimation.
 
 ---
 
-## 🎓 Academic Context
+## Signal Conditioning
 
-This project is a direct implementation of:
+The PT100 measurement requires a proper analog front-end.
 
-- System Identification  
-- Linear Control Design  
-
-on real hardware, bridging theory and practice:
-
-- Identified model from experimental data  
-- Designed optimal controller  
-- Deployed on embedded system  
+Noise reduction before the ADC is necessary to obtain a stable signal.  
+The quality of this signal directly affects the performance of the state estimator.
 
 ---
 
-## 🚀 Outcome
+## System Characteristics
 
-- Validated state-space model of thermal system  
-- Working LQG controller  
-- Stable real-world temperature regulation  
-- End-to-end model-based control pipeline  
+The system exhibits slow dynamics and significant thermal inertia.
+
+Measurements are affected by noise.
+
+As a result, aggressive control is not appropriate. Stability and consistency are more important than fast response.
 
 ---
 
-## 📁 Project Structure
+## Notes
 
+The main difficulty in this project was not the controller design itself.
 
-# License
+The critical parts were:
 
-This project is licensed under the  
-**Creative Commons Attribution-NonCommercial 4.0 International (CC BY-NC 4.0)** license.
+Obtaining reliable measurement data  
+Constructing a model that reflects the real system  
+Handling non-ideal behaviour in practice  
 
-You are free to:
-- **Share** — copy and redistribute the material in any medium or format
-- **Adapt** — remix, transform, and build upon the material
+---
 
-Under the following terms:
-- **Attribution** — You must give appropriate credit, provide a link to the license, and indicate if changes were made.
-- **NonCommercial** — You may not use the material for commercial purposes.
+## Academic Context
 
-## Full License Text
-The full legal code is available at:  
-[https://creativecommons.org/licenses/by-nc/4.0/legalcode](https://creativecommons.org/licenses/by-nc/4.0/legalcode)
+This work is based on concepts from
 
-## Human-Readable Summary
-A simple summary of the license terms:  
-[https://creativecommons.org/licenses/by-nc/4.0/](https://creativecommons.org/licenses/by-nc/4.0/)
+System Identification  
+Linear Control Design  
+
+The objective has been to apply these methods to a real system rather than limiting the work to simulation.
+
+---
+
+## Result
+
+A state-space model identified from experimental data  
+An implemented LQG controller  
+Stable temperature control on a physical system  
+
+---
+
+## Project Structure
