@@ -1,37 +1,38 @@
+## Introduction - MashMachine
+This project of mine has been a great journey for me to learn even more about my courses in the MPSYS program at Chalmers, Automation and Mechatronics. 
 
-Where
+I have specifically used two courses in practice: SSY230 (System Identification) and SSY285 (Design of Linear Control Systems).
 
-x_k is the internal state describing the thermal dynamics  
-u_k is the input, corresponding to heater power  
-y_k is the measured temperature  
-v_k represents measurement noise  
+In the System Identification course, I used my mash tun to collect both estimation and validation data.
 
-The model is obtained from experimental data rather than assumed.
+I used the System Identification Toolbox in MATLAB to derive state-space models for three different operating points: 50°C, 65°C, and 70°C.
 
----
+This means that all system matrices were computed in MATLAB, and then implemented directly on the ESP32. The computational work was therefore performed offline, rather than on the microcontroller.
 
-## Control (LQG)
+Once the state-space model was obtained, I used my other course, Design of Linear Control Systems, to design a controller based on this model.
 
-The controller is based on LQG.
+I first implemented a state-feedback LQR controller, and later extended it to an LQG controller by adding a Kalman filter for state estimation.
 
-An LQR formulation is used for state feedback, and a Kalman filter is used for state estimation.
+This requires a state-space model, since LQG relies on an explicit representation of the system dynamics. In contrast to PID control, which operates only on the control error, LQG uses the model to estimate internal states and compute the control input.
 
-This allows the controller to operate on an estimate of the internal state despite noisy measurements.
+With that said, the LQG controller was somewhat excessive for this application, since the system exhibits slow and stable dynamics. A PID controller would likely have been sufficient.
 
-The focus has been on achieving stable behaviour on the real system rather than optimal performance in simulation.
+## Home Assistant Integration
 
----
+The system is integrated with Home Assistant for monitoring and interaction.
 
-## System Identification
+A local Linux machine is used as a small server, running Home Assistant in a Docker container. The same setup also runs supporting services such as InfluxDB and Grafana.
 
-The model is obtained through experiments on the physical system.
+Communication between the ESP32 and Home Assistant is handled using MQTT.
 
-Step response and sinusoidal excitation are used to capture the dynamics.  
-From this data, a state-space model is estimated and used directly for controller design.
+This setup allows:
 
-A reasonable model is essential. Without it, the controller has no meaningful foundation.
+Real-time monitoring of temperature, control signals, and system states  
+Logging of data to InfluxDB for further analysis  
+Visualization of system behaviour in Grafana  
+Remote interaction through the Home Assistant interface  
 
----
+The purpose of this integration is not only convenience, but also to enable data collection for system identification and validation, as well as to observe the controller performance over time.
 
 ## Measurement System
 
@@ -62,15 +63,6 @@ Simpler calibration, essentially gain and offset
 More stable and predictable measurements  
 
 This change significantly improved both identification and state estimation.
-
----
-
-## Signal Conditioning
-
-The PT100 measurement requires a proper analog front-end.
-
-Noise reduction before the ADC is necessary to obtain a stable signal.  
-The quality of this signal directly affects the performance of the state estimator.
 
 ---
 
@@ -112,7 +104,3 @@ The objective has been to apply these methods to a real system rather than limit
 A state-space model identified from experimental data  
 An implemented LQG controller  
 Stable temperature control on a physical system  
-
----
-
-## Project Structure
