@@ -7,7 +7,11 @@ In the System Identification course, I used my mash tun to collect both estimati
 
 I used the System Identification Toolbox in MATLAB to derive state-space models for three different operating points: 50°C, 65°C, and 70°C.
 
-This means that all system matrices were computed in MATLAB, and then implemented directly on the ESP32. The computational work was therefore performed offline, rather than on the microcontroller.
+<img width="932" height="629" alt="1" src="https://github.com/user-attachments/assets/a54e2216-81a7-4097-b620-746c9781e835" />
+<img width="577" height="616" alt="2" src="https://github.com/user-attachments/assets/50202076-848b-47c7-a5b3-23d023137d4c" />
+
+
+All the system matrices were computed in MATLAB, and then implemented directly on the ESP32. The computational work was therefore performed offline, rather than on the microcontroller.
 
 Once the state-space model was obtained, I used my other course, Design of Linear Control Systems, to design a controller based on this model.
 
