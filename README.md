@@ -1,5 +1,5 @@
 ## Introduction - MashMachine
-This project of mine has been a great journey for me to learn even more about my courses in the MPSYS program at Chalmers, Automation and Mechatronics. 
+This project of mine has been a great journey for me to learn even more about my courses in the MPSYS (System Control and Mechatronics) program at Chalmers.
 
 I have specifically used two courses in practice: SSY230 (System Identification) and SSY285 (Design of Linear Control Systems).
 
