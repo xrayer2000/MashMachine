@@ -7,8 +7,11 @@ In the System Identification course, I used my mash tun to collect both estimati
 
 I used the System Identification Toolbox in MATLAB to derive state-space models for three different operating points: 50°C, 65°C, and 70°C.
 
-<img width="932" height="629" alt="1" src="https://github.com/user-attachments/assets/a54e2216-81a7-4097-b620-746c9781e835" />
-<img width="577" height="616" alt="2" src="https://github.com/user-attachments/assets/50202076-848b-47c7-a5b3-23d023137d4c" />
+<img width="1980" height="1086" alt="EstimationData_65_75_85C" src="https://github.com/user-attachments/assets/ba195b1b-06e1-48aa-bb03-8839d37782ae" />
+
+<img width="1121" height="1081" alt="validationData_65_75_85C" src="https://github.com/user-attachments/assets/5fddf2a6-1d24-4b75-828c-5e1a164c7b52" />
+
+<img width="1386" height="600" alt="ARMAX1200" src="https://github.com/user-attachments/assets/817960ff-72b0-4b29-8f30-a81d7583b2b1" />
 
 
 All the system matrices were computed in MATLAB, and then implemented directly on the ESP32. The computational work was therefore performed offline, rather than on the microcontroller.
@@ -37,6 +40,33 @@ Visualization of system behaviour in Grafana
 Remote interaction through the Home Assistant interface  
 
 The purpose of this integration is not only convenience, but also to enable data collection for system identification and validation, as well as to observe the controller performance over time.
+
+## System Implementation
+
+The starting point for this project was a very limited mash tun from Vevor, which only supported basic heating with its original controller.
+
+The original system lacked proper control and exhibited temperature overshoot of around 2°C. To address this, the original controller was removed and replaced with a custom-built control system.
+
+Several hardware modifications were made:
+
+A circulation system was added using a pump  
+Piping was installed to allow continuous wort circulation  
+The original control electronics were replaced with an ESP32-based system  
+
+The purpose of the circulation system is to improve temperature uniformity and make the system more suitable for control.
+
+With the new controller, temperature regulation is significantly improved, with essentially no observable overshoot under normal operation.
+
+In addition to the control system, several higher-level features were implemented:
+
+Hop timers  
+Mash programs  
+Automated process control logic 
+Home Assistant integration
+
+The Home Assistant integrationis is mainly for convenience, allowing me to monitor the mash process from anywhere.
+
+The result is a system that not only performs better in terms of control, but also provides functionality expected from a more advanced brewing setup.
 
 ## Measurement System
 
