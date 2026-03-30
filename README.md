@@ -60,8 +60,9 @@ With the new controller, temperature regulation is significantly improved, with 
 In addition to the control system, several higher-level features were implemented:
 
 Hop timers  
-Mash programs  
-Automated process control logic 
+Mash programs
+Automated process control logic
+
 Home Assistant integration
 
 The Home Assistant integrationis is mainly for convenience, allowing me to monitor the mash process from anywhere.
