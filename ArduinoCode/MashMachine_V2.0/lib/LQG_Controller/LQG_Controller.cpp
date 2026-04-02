@@ -201,7 +201,7 @@ bool LQGController::Compute()
     double Qsat = Clamp(Qraw, Qmin_W_, Qmax_W_);
 
     Q_prev_W_ = Qsat;
-    *U_ = Clamp(Qsat * W_to_PWM, 0.0, PWM_MAX);
+    //*U_ = Clamp(Qsat * W_to_PWM, 0.0, PWM_MAX);
 
     lqgi_saturated_prev_ = lqgi_saturated;
 
