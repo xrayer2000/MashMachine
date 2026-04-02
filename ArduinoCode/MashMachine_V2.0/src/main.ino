@@ -259,6 +259,7 @@ const int resolution = 12;
 U8G2_SH1106_128X64_NONAME_F_HW_I2C display1(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
 U8G2_SH1106_128X64_NONAME_F_HW_I2C display2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
 u16_t timeLastTouched = 0;
+bool displaySleeping = false;
 //Oled - 2.42"
 //-----------------------------------------------------------------------
 double passedTime, previousPassedTime1, previousPassedTime2 = 0;
@@ -323,6 +324,7 @@ void setup() {//=================================================SETUP==========
   
   //initialize Dallas Temperature
   dallasTemp.begin();
+  dallasTemp.setWaitForConversion(false);  // <-- add this
   dallasTemp.requestTemperatures(); 
   current_airTemp = dallasTemp.getTempCByIndex(0);
   previous_airTemp = current_airTemp;
@@ -467,7 +469,7 @@ void loop() { //=================================================LOOP===========
   if (loopCount == 1)
       last = now;
 
-  if (loopCount >= 10)
+  if (loopCount >= 100)
   {
       sumLoopTime = now - last;
       avgLoopTime = sumLoopTime / (loopCount - 1);
@@ -487,21 +489,20 @@ void loop() { //=================================================LOOP===========
   );
   // ---------------------------------------------------------
 
-  passedTime = millis() / 1000.0;
+  passedTime = millis() * 0.001f; 
 
-  if(millis()/1000.0/60.0 - timeLastTouched > settings.timeBeforeDisable)
+  float minutesSinceLastAction = (passedTime * 0.0166667f) - timeLastTouched;
+  bool shouldSleep = (minutesSinceLastAction > settings.timeBeforeDisable);
+
+  if (shouldSleep != displaySleeping)
   {
-    display1.setPowerSave(1);
-    display2.setPowerSave(1);
-  }
-  else
-  {
-    display1.setPowerSave(0);
-    display2.setPowerSave(0);
+      displaySleeping = shouldSleep;
+      display1.setPowerSave(displaySleeping);
+      display2.setPowerSave(displaySleeping);
   }
     
   const float UPDATE_INTERVAL1 = 0.10;
-  const float UPDATE_INTERVAL2 = 0.01;
+  const float UPDATE_INTERVAL2 = 0.1;
   bool shouldUpdate1 = (passedTime - previousPassedTime1 >= UPDATE_INTERVAL1);
   bool shouldUpdate2 = (passedTime - previousPassedTime2 >= UPDATE_INTERVAL2);
   updateSettings();
@@ -651,13 +652,10 @@ void loop() { //=================================================LOOP===========
     case MENU_HOPS_PROGRAM: page_MENU_HOPS_PROGRAM(); break;
   }
 
-  printPointer();              
+  printPointer();    
   if ((updateAllItems || updateItemValue) && shouldUpdate2)
   {
-    unsigned long t0 = micros();
     display1.sendBuffer();                        //välldigt långsam
-    unsigned long t1 = micros();
-    //Serial.println(t1 - t0);  // microseconds
 
     previousPassedTime2 = passedTime;
     updateAllItems = false;
@@ -702,19 +700,10 @@ void page_MenuRoot(){//=================================================ROOT_MEN
   {
     cursorPos = root_pntrPos;
     dispOffset = root_dispOffset;
-    
+
     initMenuPage(F("MAIN MENU"), 4);
     initPage = false;
   }
-  doPointerNavigation();
-  
-  if(menuItemPrintable(1,1)){display1.print(F("MODE ->            "));}
-  if(menuItemPrintable(1,2)){display1.print(F("MISC               "));}  
-  if(menuItemPrintable(1,3)){display1.print(F("MASH PROGRAM       "));} 
-  if(menuItemPrintable(1,4)){display1.print(F("HOPS PROGRAM       "));} 
-  // display1.drawLine(86, 0, 86, 80); //divider
-
-  if(menuItemPrintable(7,1)){printStringAtWidth(systemModeToString(settings.systemMode), 4);}
 
   if(btnOk.Pressed())
   {
@@ -724,13 +713,41 @@ void page_MenuRoot(){//=================================================ROOT_MEN
     initPage = true;
     switch (cursorPos)
     {
-    case 0: currPage = MENU_MODE; return;
-    case 1: currPage = MENU_MISC; return;
-    case 2: currPage = MENU_MASH_PROGRAM; return;
-    case 3: currPage = MENU_HOPS_PROGRAM; return;
+      case 0: currPage = MENU_MODE;         changeValues[0] = false; edditing = false; return;
+      case 1: currPage = MENU_MISC;         changeValues[1] = false; edditing = false; return;
+      case 2: currPage = MENU_MASH_PROGRAM; changeValues[2] = false; edditing = false; return;
+      case 3: currPage = MENU_HOPS_PROGRAM; changeValues[3] = false; edditing = false; return;
+    }
+  }
+
+  else
+    doPointerNavigation();
+
+  if(!(updateAllItems | updateItemValue)) return;
+
+  for(uint8_t i = 1; i <= 4; i++)
+  {
+    if(menuItemPrintable(1, i))
+    {
+      switch(i)
+      {
+        case 1: display1.print(F("MODE ->            ")); break;
+        case 2: display1.print(F("MISC               ")); break;
+        case 3: display1.print(F("MASH PROGRAM       ")); break;
+        case 4: display1.print(F("HOPS PROGRAM       ")); break;
+      }
+    }
+
+    if(menuItemPrintable(7, i))
+    {
+      switch(i)
+      {
+        case 1: printStringAtWidth(systemModeToString(settings.systemMode), 4); break;
+      }
     }
   }
 }
+
 void page_MENU_MODE(){//=================================================MODE============================================
   if(initPage)
   {
@@ -1477,7 +1494,7 @@ void updateSettings()
     previousPassedTimeS = passedTimeS;
 
     bool isAuto = settings.autoModeMash;
-    passedTimeS = isAuto ? (millis() - tS) / 1000.0 : 0;
+    passedTimeS = isAuto ? (millis() - tS) * 0.001f : 0;
 
     if (!isAuto) {
       tS = millis();
@@ -1553,15 +1570,15 @@ void updateSensorValues() {
 
     // PT100 Temperature reading and conversion
     double rawTemp = PT100.temperature(RNOMINAL, RREF);
-
-    // Apply two-point calibration
+    // Apply two-point calibration for PT100
     double calibratedTemp = a * rawTemp + b;
     filteredTempPT100 = Filter(calibratedTemp, filteredTempPT100, settings.filter_adc1, 100.0f);
     tempPT100 = roundTo(filteredTempPT100, 3); // Round to 3 decimal places
 
-    dallasTemp.requestTemperatures(); // Request temperature readings from the sensor
+    // Dallas: read result from PREVIOUS request, then fire next one
     previous_airTemp = current_airTemp;
-    current_airTemp = dallasTemp.getTempCByIndex(0);
+    current_airTemp = dallasTemp.getTempCByIndex(0);  // reads last conversion
+    dallasTemp.requestTemperatures();                 // fires next (non-blocking)
 
     waterDetected = !digitalRead(waterDetectedPin);
 
