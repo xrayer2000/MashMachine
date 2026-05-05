@@ -1,0 +1,227 @@
+
+
+# Loads default set of integrations. Do not remove.
+default_config:
+
+# Load frontend themes from the themes folder
+frontend:
+  themes: !include_dir_merge_named themes
+
+automation: !include automations.yaml
+script: !include scripts.yaml
+scene: !include scenes.yaml
+
+mqtt:
+  sensor:
+# Plant Waterer
+    - name: "plantWatererSoilMoisture1"
+      unit_of_measurement: '%'
+      state_topic: "/plantWaterer/soilMoisture1"
+      icon: mdi:water
+
+    - name: "plantWatererSoilMoisture2"
+      unit_of_measurement: '%'
+      state_topic: "/plantWaterer/soilMoisture2"
+      icon: mdi:water
+
+    - name: "plantWatererTargetSoilMoisture"
+      unit_of_measurement: '%'
+      state_topic: "/plantWaterer/targetMoisture"
+      icon: mdi:water
+
+    - name: "plantWatererIsWatering"
+      state_topic: "/plantWaterer/isWatering"
+      icon: mdi:watering-can
+
+    - name: "plantWatererAirTemp"
+      unit_of_measurement: 'C'
+      state_topic: "/plantWaterer/airTemp"
+      icon: mdi:temperature-celsius
+
+# Mash Machine V2.0     
+    - name: "mashTemp"
+      unit_of_measurement: 'C'
+      state_topic: "/mashMachine/mashTemp"
+      icon: mdi:temperature-celsius
+
+    - name: "mashAirTemp"
+      unit_of_measurement: 'C'
+      state_topic: "/mashMachine/airTemp"
+      icon: mdi:temperature-celsius
+
+    - name: "mashPassedTime"
+      unit_of_measurement: 'min'
+      state_topic: "/mashMachine/timePassed"
+      icon: mdi:timer
+
+    - name: "mashTargetTemp"
+      unit_of_measurement: 'C'
+      state_topic: "/mashMachine/targetTemp"
+      icon: mdi:temperature-celsius
+
+    - name: "mashDutyCycle"
+      unit_of_measurement: '%'
+      state_topic: "/mashMachine/dutyCycle"
+      icon: mdi:percent
+
+    - name: "mashInputPower"
+      unit_of_measurement: 'W'
+      state_topic: "/mashMachine/powerIn"
+      icon: mdi:lightning-bolt
+
+    - name: "mash_PumpOn"
+      state_topic: "/mashMachine/pumpOn"
+      icon: mdi:toggle-switch-off-outline
+
+    - name: "mash_Kp"
+      state_topic: "/mashMachine/Kp"
+      icon: mdi:knob
+
+    - name: "mash_Ki"
+      state_topic: "/mashMachine/Ki"
+      icon: mdi:knob
+
+    - name: "mash_K_heatLoss"
+      state_topic: "/mashMachine/K_heatLoss"
+      icon: mdi:knob
+
+    - name: "mash_POnE"
+      state_topic: "/mashMachine/POnE"
+      icon: mdi:knob
+
+    - name: "mash_filterTemp"
+      state_topic: "/mashMachine/filterTemp"
+      icon: mdi:knob
+
+    - name: "mash_filterDC"
+      state_topic: "/mashMachine/filterDC"
+      icon: mdi:knob
+
+    - name: "mashHopsAlarm"
+      state_topic: "/mashMachine/hopsAlarm"
+      icon: mdi:hops
+
+    - name: "mash_waterDetected"
+      state_topic: "/mashMachine/waterDetected"
+      icon: mdi:water-alert
+
+
+# Lautering Tun     
+    - name: "lauteringTemp"
+      unit_of_measurement: 'C'
+      state_topic: "/lauteringTun/lauteringTemp"
+      icon: mdi:temperature-celsius
+
+    - name: "lauteringAirTemp"
+      unit_of_measurement: 'C'
+      state_topic: "/lauteringTun/airTemp"
+      icon: mdi:temperature-celsius
+
+    - name: "lauteringPassedTime"
+      unit_of_measurement: 'min'
+      state_topic: "/lauteringTun/timePassed"
+      icon: mdi:timer
+
+    - name: "lauteringTargetTemp"
+      unit_of_measurement: 'C'
+      state_topic: "/lauteringTun/targetTemp"
+      icon: mdi:temperature-celsius
+
+    - name: "lauteringDutyCycle"
+      unit_of_measurement: '%'
+      state_topic: "/lauteringTun/dutyCycle"
+      icon: mdi:percent
+
+    - name: "lautering_Kp"
+      state_topic: "/lauteringTun/Kp"
+      icon: mdi:knob
+
+    - name: "lautering_Ki"
+      state_topic: "/lauteringTun/Ki"
+      icon: mdi:knob
+
+    - name: "lautering_K_heatLoss"
+      state_topic: "/lauteringTun/K_heatLoss"
+      icon: mdi:knob
+
+                  
+# Reflow Hot Plate
+    - name: "reflowHotPlateElementTemp"
+      unit_of_measurement: 'C'
+      state_topic: "/reflowHotPlate/elementTemp"
+      icon: mdi:temperature-celsius
+
+    - name: "reflowHotPlateTargetTemp"
+      unit_of_measurement: 'C'
+      state_topic: "/reflowHotPlate/targetTemp"
+      icon: mdi:temperature-celsius
+
+    - name: "reflowHotPlateDutyCycle"
+      unit_of_measurement: '%'
+      state_topic: "/reflowHotPlate/dutyCycle"
+      icon: mdi:percent
+
+    - name: "reflowHotPlatePassedTime"
+      unit_of_measurement: 'min'
+      state_topic: "/reflowHotPlate/timePassed"
+      icon: mdi:timer
+
+    - name: "reflowHotPlate_Kp"
+      state_topic: "/reflowHotPlate/Kp"
+      icon: mdi:knob
+
+    - name: "reflowHotPlate_Ki"
+      state_topic: "/reflowHotPlate/Ki"
+      icon: mdi:knob
+
+#Data Logger
+    - name: "dataLoggerAirTemperture"
+      unit_of_measurement: 'C'
+      state_topic: "/dataLogger/temperature"
+      icon: mdi:temperature-celsius
+
+    - name: "dataLoggerHumidity"
+      unit_of_measurement: '%'
+      state_topic: "/dataLogger/humidity"
+      icon: mdi:percent
+
+    - name: "dataLoggerPresure"
+      state_topic: "/dataLogger/pressure"
+      unit_of_measurement: 'Pa'
+      icon: mdi:gauge
+
+    - name: "dataLoggerLux"
+      state_topic: "/dataLogger/lux"
+      unit_of_measurement: 'Lx'
+      icon: mdi:sun-wireless
+
+    - name: "dataLoggerSoilMoisture"
+      unit_of_measurement: '%'
+      state_topic: "/dataLogger/soilMoisture"
+      icon: mdi:water
+
+
+http:
+  use_x_forwarded_for: true
+  trusted_proxies:
+    - 172.17.0.2     
+
+history:
+  include:
+    domains:
+      - sensor
+      - switch
+recorder:
+  purge_keep_days: 30
+  exclude:
+    domains:
+      - automation
+      - updater
+    entity_globs:
+      - sensor.weather_*
+    entities:
+      - sun.sun 
+    event_types:
+      - call_service
+      
+

@@ -97,7 +97,7 @@ void RotaryEncoderAccel::tick(void)
 
   if (_oldState != thisState) {
     _position += KNOBDIR[thisState | (_oldState << 2)];
-    _positionExt = _position >> 1;
+    _positionExt = _position >> 1;  // Divide by 2 to get the external position.
 
     // DEBUG
     // Serial.print("state: ");
@@ -117,7 +117,7 @@ void RotaryEncoderAccel::tick(void)
         if (delta != 0 && delta < accel) {
           unsigned long increment = (accel / delta - 1) * KNOBDIR[thisState | (_oldState << 2)];
           _position += increment * multipleter;
-          _positionExt = _position >> 1;
+          _positionExt = _position >> 1;  // Divide by 4 to get the external position.
         }
         prevTick = actualTick;
       }

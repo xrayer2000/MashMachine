@@ -31,6 +31,17 @@ void Excitation::setSine(double bias_W,
         omega = 0.0;
 }
 
+void Excitation::setMultiSine(double bias_W,
+                               double amplitude1_W, double period1_s,
+                               double amplitude2_W, double period2_s)
+{
+    Qbias_W = bias_W;
+    A_W     = amplitude1_W;
+    omega   = (period1_s > 0.0) ? 2.0 * M_PI / period1_s : 0.0;
+    A2_W    = amplitude2_W;
+    omega2  = (period2_s > 0.0) ? 2.0 * M_PI / period2_s : 0.0;
+}
+
 void Excitation::setStep(double step_W)
 {
     Qstep_W = step_W;
@@ -58,6 +69,10 @@ double Excitation::compute()
     {
         case SINE:
             return Qbias_W + A_W * sin(omega * t);
+            
+        case MULTISINE:
+                return Qbias_W + A_W  * sin(omega  * t)
+                        + A2_W * sin(omega2 * t);
 
         case STEP:
             return Qstep_W;

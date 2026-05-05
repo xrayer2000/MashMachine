@@ -5,12 +5,13 @@
 // #include <Adafruit_SSD1306.h> //oled
 #include <U8g2lib.h> //oled
 // #include <Adafruit_I2CDevice.h>
-// #include <PID_v1.h> //PID
 #include <PI_Controller.h> //PI controller with heat loss compensation
-#include <LQG_Controller.h> //LQG controller
-#include <LinearModels/Model_50C.h> //LQG controller
-#include <LinearModels/Model_65C.h> //LQG controller
-#include <LinearModels/Model_75C.h> //LQG controller
+#include "Controllers/LQG_Controller.h"
+#include "Controllers/Boil_Controller.h"
+#include "Linear_SSM_Models/Model_50C.h"
+#include "Linear_SSM_Models/Model_65C.h"
+#include "Linear_SSM_Models/Model_75C.h"
+#include "Linear_SSM_Models/Model_Boil.h"
 #include "Excitation.h" //identification signal generator
 #include <PressButton.h> //Interface
 #include <RotaryEncoderAccel.h> //Interface
@@ -29,8 +30,31 @@
 
 //-----------------------------------------------------------------------
 //Model och enums
-enum ModelID { MODEL_50, MODEL_65, MODEL_75 };
+enum ModelID { MODEL_50, MODEL_65, MODEL_75, MODEL_Boil };
 //-----------------------------------------------------------------------
+
+// Hop icon, 48x48px
+static const unsigned char hop_logo[] PROGMEM = {
+  0x00, 0x00, 0x00, 0xC0, 0xCC, 0x00, 0x00, 0x00, 0x00, 0x70, 0xEF, 0x01, 0x00, 0x00, 0x20, 0x78,
+  0x07, 0x00, 0x00, 0x00, 0x20, 0x38, 0x60, 0x0C, 0x00, 0x00, 0x20, 0x38, 0xE0, 0x0D, 0x00, 0x00,
+  0x20, 0x82, 0xDF, 0x05, 0x00, 0x00, 0x00, 0x03, 0xBF, 0x01, 0x00, 0x00, 0x00, 0xFB, 0xBC, 0x04,
+  0x00, 0x00, 0x00, 0xFF, 0xDD, 0x06, 0x00, 0x38, 0x00, 0xFF, 0x1D, 0x02, 0x00, 0xF8, 0x00, 0xFE,
+  0x0D, 0x01, 0x00, 0xE0, 0x01, 0xFE, 0x26, 0x00, 0xC0, 0xE7, 0x01, 0xFC, 0xF0, 0x00, 0xE0, 0xF3,
+  0x03, 0x7C, 0x78, 0x00, 0xF0, 0xF3, 0x07, 0x1C, 0x01, 0x00, 0xF0, 0xFB, 0x01, 0x9C, 0x1F, 0x00,
+  0x08, 0x78, 0x00, 0xD8, 0x1F, 0x00, 0x60, 0x38, 0xFF, 0x17, 0x07, 0x00, 0x30, 0x9D, 0xFF, 0x0F,
+  0x98, 0x00, 0x38, 0xDD, 0xFF, 0x0F, 0xCC, 0x03, 0xBC, 0x4D, 0xFE, 0x19, 0xCC, 0x07, 0x9E, 0x0D,
+  0xFE, 0x01, 0x1E, 0x00, 0xC2, 0x4B, 0xFE, 0x09, 0x3E, 0x0C, 0xC0, 0xE3, 0xFE, 0x19, 0x7F, 0x1C,
+  0xD6, 0xE7, 0xFC, 0x3D, 0x7F, 0x19, 0xD2, 0xF7, 0xFC, 0x3C, 0x7F, 0x03, 0xD3, 0xF7, 0xFC, 0xFC,
+  0x79, 0x47, 0x9B, 0x73, 0xF8, 0x78, 0x81, 0x57, 0x39, 0x38, 0x7A, 0x71, 0xEE, 0x97, 0xF8, 0x19,
+  0x36, 0x61, 0x0E, 0x33, 0xFA, 0x50, 0x8E, 0x69, 0x0C, 0x7C, 0x02, 0xD0, 0xFE, 0x49, 0xEC, 0xC0,
+  0x06, 0xC3, 0xFC, 0x1D, 0xD8, 0xC0, 0xCE, 0xC1, 0xFC, 0x1C, 0x80, 0x1D, 0xE6, 0xE0, 0xF8, 0x1C,
+  0x00, 0x00, 0x00, 0xE0, 0x78, 0x18, 0x00, 0x00, 0x00, 0x40, 0x70, 0x18, 0x00, 0x00, 0x00, 0x40,
+  0xA4, 0x18, 0x00, 0x00, 0x00, 0x00, 0xCC, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFD, 0x04, 0x00, 0x00,
+  0x00, 0x00, 0xF9, 0x06, 0x00, 0x00, 0x00, 0x00, 0x7B, 0x06, 0x00, 0x00, 0x00, 0x00, 0x33, 0x03,
+  0x00, 0x00, 0x00, 0x00, 0x0B, 0x03, 0x00, 0x00, 0x00, 0x00, 0x5A, 0x01, 0x00, 0x00, 0x00, 0x00,
+  0x78, 0x00, 0x00, 0x00, 0x00, 0x00, 0x30, 0x00, 0x00, 0x00, 0x00, 0x00, 0x20, 0x00, 0x00, 0x00,
+};
+
 //IO-pins
 #define dutyCycleOutPin 26 //    green LED
 #define ledOnPin 14 //           orange LED
@@ -86,7 +110,7 @@ WiFiClient espClient;
 PubSubClient client(espClient); 
 char messages[50]; 
 volatile  bool TopicArrived = false;
-const     int mqttpayloadSize = 10;
+const     int mqttpayloadSize = 16;
 char mqttpayload [mqttpayloadSize] = {'\0'};
 String mqtttopic;
 //-----------------------------------------------------------------------
@@ -102,13 +126,15 @@ PressButton btnOk(confirmBtnPin, 10); //debounce (ISR-attached inside library)
 //-----------------------------------------------------------------------
 //System Mode
 enum SystemMode {
-  MODE_CONTROL,
+  MODE_CONTROL_LQG,
+  MODE_CONTROL_PI,
   MODE_IDENTIFICATION,
   MODE_MANUAL
 };
 //Identification type
 enum IdentificationType {
   IDENT_SINE,
+  IDENT_MULTI_SINE,
   IDENT_STEP_RESPONSE
 };
 
@@ -117,28 +143,48 @@ const char* systemModeToString(SystemMode mode);
 
 Excitation excitation;
 
+enum BrewingLocation {
+  OutDoor,
+  InDoor
+};
+
+const char* brewingLocationToString(BrewingLocation location);
+void updateAmbientSource(BrewingLocation loc);
+
 //Menu structure
 enum pageType{
   MENU_ROOT,
   MENU_MODE,
-  MENU_CONTROL_MODE,
+  MENU_CONTROL_MODE_LQG,
+  MENU_CONTROL_MODE_PI,
   MENU_IDENT_MODE,
   MENU_IDENT_TYPE,
+  MENU_IDENT_SINE,
+  MENU_IDENT_MULTI_SINE,
+  MENU_IDENT_STEP_RESPONSE,
   MENU_MANUAL_MODE,
   MENU_MISC,
+  MENU_BREWING_LOCATION,
   MENU_MASH_PROGRAM,
-  MENU_HOPS_PROGRAM
+  MENU_HOPS_PROGRAM,
+  MENU_WHIRLPOOL_PROGRAM
 };
 enum pageType currPage = MENU_ROOT;
 void page_MenuRoot();
 void page_MENU_MODE();
-void page_MENU_CONTROL_MODE();
+void page_MENU_CONTROL_MODE_LQG();
+void page_MENU_CONTROL_MODE_PI();
 void page_MENU_IDENT_MODE();
 void page_MENU_IDENT_TYPE();
+void page_MENU_IDENT_SINE();
+void page_MENU_IDENT_MULTI_SINE();
+void page_MENU_IDENT_STEP_RESPONSE();
 void page_MENU_MANUAL_MODE();
 void page_MENU_MISC();
+void page_MENU_BREWING_LOCATION();
 void page_MENU_MASH_PROGRAM();
 void page_MENU_HOPS_PROGRAM();
+void page_MENU_WHIRLPOOL_PROGRAM();
 //-----------------------------------------------------------------------
 //Menu internals
 boolean updateAllItems = true;
@@ -177,7 +223,7 @@ struct Mysettings{
   double gamma = 0.35;
   double targetTemp = 25;
 
-  SystemMode systemMode = MODE_CONTROL;
+  SystemMode systemMode = MODE_CONTROL_LQG;
 
   IdentificationType identificationType;
   bool start_stop = 1;
@@ -186,29 +232,39 @@ struct Mysettings{
   int16_t period = 2;
   int16_t duration = 120;
 
+  int16_t amplitude2 = 5;
+  int16_t period2 = 2;
+
   double manualPower = 0;
 
-  boolean autoModeMash = 1;
-  boolean manualModeHops = 1;
+  BrewingLocation brewingLocation = OutDoor;
 
-  int16_t mashTemps[5] = {66,76,78,15,15};
-  int16_t mashTimes[5] = {60,15,15,1,1};
+  boolean startMashProgram = 0;
+  boolean startHopProgram = 0;
+  boolean startWhirlpoolProgram = 0;
 
+  int16_t mashTemps[3] = {66,76,78};
+  int16_t mashTimes[3] = {60,15,15};
+  
   int16_t hopTimes[3] = {60, 15, 1};
+  int16_t boilTime = 60;
+  int16_t boilTemp = 100;
+  int16_t hopIndex = -1;
+
+  int16_t whirlpoolTemp = 75;
+  int16_t whirlpoolTime = 20;
 
   int16_t timeBeforeDisable = 2;
 
   boolean power = true;
   boolean pump = false;
-  int16_t callibrationCold = -2;
-  int16_t callibrationHot = 115;
-  int16_t maxElementTemp = 100; //220
+  int16_t maxMashTemp = 100; //220
 
-  double filter_adc1 = 0.99f;
-  double filterDC = 0.99f;
+  double filter_adc1 = 0.95f;
+  double filterDC = 0.95f;
 
-  int16_t alarmVolume = 20;
-  int16_t alarmTime = 5;
+  int16_t alarmVolume = 4;
+  int16_t alarmTime = 3;
 
   uint16_t settingsCheckValue = SETTINGS_CHKVAL;
 };
@@ -218,13 +274,17 @@ Mysettings oldSettings;
 void sets_SetDeafault();
 void sets_Load();
 void sets_Save();
+bool prevStartMashProgram_ = false;
+bool prevStartHopProgram_ = false;
+bool prevStartWhirlpoolProgram_ = false;
 //-----------------------------------------------------------------------
 //Time
 unsigned long previousTime = 0; 
 unsigned long currentTime;
 double tS;
-long passedTimeS;
-long previousPassedTimeS;
+long passedTimeS_mashProgram = 0;
+long passedTimeS_hopProgram = 0;
+long passedTimeS_whirlpoolProgram = 0;
 unsigned long previousSensorRead = 0;
 const unsigned long saveInterval = 60000; // 60 000 ms = 60 sekunder
 unsigned long lastEditTime = 0;
@@ -233,22 +293,31 @@ unsigned long lastEditTime = 0;
 double Output_mashTemp;
 double current_mashTemp;
 double previous_mashTemp;
+double rawTemp;
+
 double current_airTemp;
+double outdoorTemp; //received from home assistant (Norwegian Meteorological Institute)
+double previous_outdoorTemp;
+double indoorTemp; //received from home assistant (STM32f411 and esp32 xiao with bmp280 sensor)
+double previous_indoorTemp;
+double* ambientTempPtr = &current_airTemp;
 double previous_airTemp;
+
 double DutyCycle = 0;
 double previousDutyCycle = 0;
 //                 y(t), u(t), r(t) 
 // PID PID_mashTemp(&current_mashTemp, &Output_mashTemp, &settings.targetTemp, &current_airTemp, settings.Kp_mash, settings.Ki_mash, 0, 0, DIRECT); //P_ON_M
-// PI_Controller mashCtrl(&current_mashTemp, &Output_mashTemp, &settings.targetTemp, &current_airTemp); //PI controller with heat loss compensation
+PI_Controller mashCtrl_PI(&current_mashTemp, &Output_mashTemp, &settings.targetTemp, ambientTempPtr); //PI controller with heat loss compensation
 double lastKp = NAN;
 double lastKi = NAN;
 double lastKHeat = NAN;
 double lastDeadband1 = NAN;
 double lastDeadband2 = NAN;
 double lastGamma = NAN;
-LQGController mashCtrlLQG(&current_mashTemp, &Output_mashTemp, &settings.targetTemp, &current_airTemp);     //LQG controller
+LQGController mashCtrlLQG(&current_mashTemp, &Output_mashTemp, &settings.targetTemp, ambientTempPtr);     //LQG controller
 static ModelID activeModel = MODEL_65; 
 double currentHeaterPower_W = 0.0;
+BoilController boilCtrl(modelBoil); //Boil controller with feedforward from boil model
 //-----------------------------------------------------------------------
 // setting PWM properties
 int freq = 240; //5
@@ -264,7 +333,6 @@ bool displaySleeping = false;
 //-----------------------------------------------------------------------
 double passedTime, previousPassedTime1, previousPassedTime2 = 0;
 bool initPage = true;
-bool changeValue = false;
 bool changeValues [20];
 //-----------------------------------------------------------------------
 //MAX31865 PT100 - Mash temperature
@@ -277,11 +345,11 @@ bool changeValues [20];
   #define RREF      435.8
   #define RNOMINAL  100.0
   // ---- Replace these with your measured values ----
-  double CAL_T1  = 7.1;     // Real temperature point 1 (ice bath)
-  double CAL_T2  = 97.0;   // Real temperature point 2 (boiling water)
+  double const CAL_T1  = 7.1;     // Real temperature point 1 (ice bath)
+  double const CAL_T2  = 100.0;   // Real temperature point 2 (boiling water)
 
-  double CAL_M1  = 7.5;     // Measured temperature at T1
-  double CAL_M2  = 93.5;   // Measured temperature at T2
+  double const CAL_M1  = 7.5;     // Measured temperature at T1
+  double const CAL_M2  = 95.3;   // Measured temperature at T2
   // ================================================
   // Calibration coefficients (computed automatically)5
   double a;
@@ -298,7 +366,7 @@ bool changeValues [20];
 //-----------------------------------------------------------------------
 //Water indicator
   bool waterDetected = true;
-
+  bool pumpWater = false; 
 //-----------------------------------------------------------------------
 // Loop time measurement variables
 static uint32_t last  = 0;
@@ -352,23 +420,23 @@ void setup() {//=================================================SETUP==========
 
   Wire.begin(21, 22);           // pins only
 
-  Serial.println("Scanning Wire...");
-  for (uint8_t addr = 1; addr < 127; addr++)
-  {
-      Wire.beginTransmission(addr);
-      uint8_t error = Wire.endTransmission();
-      if (error == 0)
-      {
-          Serial.print("Found device at 0x");
-          Serial.println(addr, HEX);
-      }
-  }
-  Serial.println("Wire done");
+  // Serial.println("Scanning Wire...");
+  // for (uint8_t addr = 1; addr < 127; addr++)
+  // {
+  //     Wire.beginTransmission(addr);
+  //     uint8_t error = Wire.endTransmission();
+  //     if (error == 0)
+  //     {
+  //         Serial.print("Found device at 0x");
+  //         Serial.println(addr, HEX);
+  //     }
+  // }
+  // Serial.println("Wire done");
 
   display1.setI2CAddress(0x3C << 1); 
   display1.begin();  
   display1.setBusClock(1000000);   
-  display1.setFont(u8g2_font_5x7_mr);	// choose a suitable font
+  display1.setFont(u8g2_font_6x12_mr);	// choose a suitable font
   display1.clearBuffer();					// clear the internal memory
   display1.setCursor(0, 0);
 
@@ -391,14 +459,28 @@ void setup() {//=================================================SETUP==========
   DISP2_CHAR_X = display2.getMaxCharWidth() + 0; //margin
   DISP2_CHAR_Y = (SCREEN_HEIGHT / DISP2_ITEM_ROWS) + 0; //margin
 
+  //---------------------------------------------------------------------------------------
+  //Welcome Screen 3 seconds
+  display1.clearBuffer();
+  display1.drawXBM(40, 4, 48, 48, hop_logo);   // centered on 128px wide display
+  display1.setFont(u8g2_font_6x10_tr);
+  display1.drawStr(5, 63, "Emil's MashMachine");
+  display1.sendBuffer();
+
+  display1.setFont(u8g2_font_6x10_tr);	// choose a suitable font
+  display1.clearBuffer();					// clear the internal memory
+  display1.setCursor(0, 0);
+  //----------------------------------------------------------------------------------------
+
   EEPROM.begin(sizeof(settings));
   sets_Load();
 
   //PT100 Temperature probe
   PT100.readRTD();
-  double rawTemp = PT100.temperature(RNOMINAL, RREF);
+  rawTemp = PT100.temperature(RNOMINAL, RREF);
 
   // Apply two-point calibration
+  
   double calibratedTemp = a * rawTemp + b;
   calibratedTemp = roundTo(calibratedTemp, 3); // Round to 3 decimal places
   tempPT100 = calibratedTemp;
@@ -406,6 +488,8 @@ void setup() {//=================================================SETUP==========
 
   current_mashTemp = tempPT100; //Temp_C;
   previous_mashTemp = tempPT100; //Temp_C;
+
+  updateAmbientSource(settings.brewingLocation);
 
   setupWiFi(); //Home assistant
   setupMQTT(); //Home assistant
@@ -420,23 +504,18 @@ void setup() {//=================================================SETUP==========
 
   setupTime(); //NTP time for InfluxDB
 
-  // PID_mashTemp.SetTunings(settings.Kp_mash, settings.Ki_mash, 0, settings.POnE_mash ? P_ON_E : P_ON_M); //P_ON_M
-  // PID_mashTemp.SetMode(AUTOMATIC);
-  // PID_mashTemp.Compute();
-
-  // //Mash Controller (PI controller with heat loss compensation)
-  // mashCtrl.SetSampleTime(500);   // ms
-  // // --- Output range ---
-  // mashCtrl.SetOutputLimits(0, 4095.0);   // 0–100 % duty
-  // // --- Tunings ---
-  // mashCtrl.SetTunings(settings.Kp_mash, settings.Ki_mash, settings.k_heatLoss);
-  // // --- Safety / behavior ---
-  // mashCtrl.SetCaptureBands(settings.deadband1, settings.deadband2, settings.gamma); // °C  // Switch from full power to regulation at ±5 °C
-  // mashCtrl.SetIntegralLimit(0.25 * 4095.0);
-  // // Start with feedforward only
-  // Output_mashTemp = settings.k_heatLoss * (current_mashTemp - current_airTemp);
-  // Output_mashTemp = constrain(Output_mashTemp, 0, 4095);
-  // mashCtrl.ResetIntegral();
+  //(PI controller)
+  mashCtrl_PI.SetSampleTime(1000);   // ms
+  // --- Output range ---
+  mashCtrl_PI.SetHeaterPowerLimits(0.0, heaterRatedPower_W);
+  // --- Tunings ---
+  mashCtrl_PI.SetTunings(settings.Kp_mash, settings.Ki_mash, settings.k_heatLoss);
+  // --- Safety / behavior ---
+  mashCtrl_PI.SetCaptureBands(settings.deadband1, settings.deadband2, settings.gamma); // °C  // Switch from full power to regulation at ±5 °C
+  mashCtrl_PI.SetIntegralLimit(0.25 * heaterRatedPower_W);
+  // Start with feedforward only
+  double Q0 = settings.k_heatLoss * (current_mashTemp - current_airTemp);
+  mashCtrl_PI.Reset(Q0);
 
   //LQG Controller 
   // 1. Initiera LQG exakt där systemet är
@@ -453,13 +532,17 @@ void setup() {//=================================================SETUP==========
   currentHeaterPower_W = Output_mashTemp * PWM_to_W;
 
   // 4. Reset med rätt initialvärde
-  mashCtrlLQG.Reset(currentHeaterPower_W); // 5. bumpless start
+  mashCtrlLQG.Init(currentHeaterPower_W); // 5. bumpless start
 
   settings.pump = false;
+
+
 }
 
 void loop() { //=================================================LOOP=======================================================
 
+
+  Serial.print("Raw temperature: "); Serial.println(rawTemp);
   // loop time measurement
   // ---------------------------------------------------------
   now = micros();
@@ -482,11 +565,11 @@ void loop() { //=================================================LOOP===========
 
   uint32_t freq = (avgLoopTime > 0) ? (1000000UL / avgLoopTime) : 0;
 
-  Serial.printf(
-    "Loop:%4lu | LoopFreq:%6lu\n",
-    avgLoopTime,
-    freq
-  );
+  // Serial.printf(
+  //   "Loop:%4lu | LoopFreq:%6lu\n",
+  //   avgLoopTime,
+  //   freq
+  // );
   // ---------------------------------------------------------
 
   passedTime = millis() * 0.001f; 
@@ -510,15 +593,8 @@ void loop() { //=================================================LOOP===========
   if(shouldUpdate1)
   {
     updateSensorValues(); 
-    updateDisp2();
+    
     previousPassedTime1 = passedTime;
-
-    // --- Run controller ---
-    // mashCtrl.Compute();
-
-    // mashCtrlLQG.Compute();
-    // currentHeaterPower_W = mashCtrlLQG.GetCurrentPower_W();
-
 
     // ===================================
     // Start Stop for Identification
@@ -534,12 +610,16 @@ void loop() { //=================================================LOOP===========
             if(settings.identificationType == IDENT_SINE)
             {
                 excitation.setType(Excitation::SINE);
-
-                double period_s = settings.period * 60.0; // minutes → seconds
-
                 excitation.setSine(settings.u0,
                                   settings.amplitude,
-                                  period_s);
+                                  settings.period * 60.0);
+            }
+            else if(settings.identificationType == IDENT_MULTI_SINE)
+            {
+                excitation.setType(Excitation::MULTISINE);
+                excitation.setMultiSine(settings.u0,
+                                        settings.amplitude,  settings.period  * 60.0,
+                                        settings.amplitude2, settings.period2 * 60.0);
             }
             else
             {
@@ -580,24 +660,50 @@ void loop() { //=================================================LOOP===========
     // =========================
     // MODE SUPERVISOR
     // =========================
+
+    updateModelForCurrentTemp(mashCtrlLQG, current_mashTemp, activeModel);
+
     switch(settings.systemMode)
     {
-        case MODE_CONTROL:
-            updateModelForSetpoint(mashCtrlLQG, settings.targetTemp, activeModel);
-            mashCtrlLQG.Compute();
-            Q_W = mashCtrlLQG.GetCurrentPower_W();
-            break;
+      case MODE_CONTROL_LQG:
+          
+        if (activeModel == MODEL_Boil)
+        {
+          boilCtrl.setInputs(current_mashTemp, *ambientTempPtr, settings.boilTemp);
+          boilCtrl.Compute();
+          Q_W = boilCtrl.GetCurrentPower_W();
+        }
+        else
+        {
+          mashCtrlLQG.Compute();
+          Q_W = mashCtrlLQG.GetCurrentPower_W();
+        }
 
-           case MODE_IDENTIFICATION:
+        break;
+
+      case MODE_CONTROL_PI:
+
+        if (activeModel == MODEL_Boil)
+        {
+          boilCtrl.setInputs(current_mashTemp, *ambientTempPtr, settings.boilTemp);
+          boilCtrl.Compute();
+          Q_W = boilCtrl.GetCurrentPower_W();
+        }
+        else
+        {
+          mashCtrl_PI.Compute();
+          Q_W = mashCtrl_PI.GetCurrentPower_W();
+        }
+          break;
+
+     case MODE_IDENTIFICATION:
 
         if(settings.start_stop)
         {
             switch(settings.identificationType)
             {
                 case IDENT_SINE:
-                    Q_W = excitation.compute();
-                    break;
-
+                case IDENT_MULTI_SINE:
                 case IDENT_STEP_RESPONSE:
                     Q_W = excitation.compute();
                     break;
@@ -613,9 +719,9 @@ void loop() { //=================================================LOOP===========
         }
         break;
 
-        case MODE_MANUAL:
-            Q_W = settings.manualPower;
-            break;
+      case MODE_MANUAL:
+          Q_W = settings.manualPower;
+          break;
     }
 
     // Saturate power
@@ -638,28 +744,41 @@ void loop() { //=================================================LOOP===========
     // Serial.print(", DutyCycle: ");
     // Serial.print(DutyCycle);
   }
-    
+  
+
+  if (updateAllItems)
+    display1.clearBuffer();
+
   switch (currPage)
   {
     case MENU_ROOT: page_MenuRoot(); break;
     case MENU_MODE: page_MENU_MODE(); break;
-    case MENU_CONTROL_MODE: page_MENU_CONTROL_MODE(); break;
+    case MENU_CONTROL_MODE_LQG: page_MENU_CONTROL_MODE_LQG(); break;
+    case MENU_CONTROL_MODE_PI: page_MENU_CONTROL_MODE_PI(); break;
     case MENU_IDENT_MODE: page_MENU_IDENT_MODE(); break;
     case MENU_IDENT_TYPE: page_MENU_IDENT_TYPE(); break;
+    case MENU_IDENT_SINE: page_MENU_IDENT_SINE(); break;
+    case MENU_IDENT_MULTI_SINE: page_MENU_IDENT_MULTI_SINE(); break;
+    case MENU_IDENT_STEP_RESPONSE: page_MENU_IDENT_STEP_RESPONSE(); break;
     case MENU_MANUAL_MODE: page_MENU_MANUAL_MODE(); break;
     case MENU_MISC: page_MENU_MISC(); break;
+    case MENU_BREWING_LOCATION: page_MENU_BREWING_LOCATION(); break;
     case MENU_MASH_PROGRAM: page_MENU_MASH_PROGRAM(); break;
     case MENU_HOPS_PROGRAM: page_MENU_HOPS_PROGRAM(); break;
+    case MENU_WHIRLPOOL_PROGRAM: page_MENU_WHIRLPOOL_PROGRAM(); break;
   }
-
-  printPointer();    
-  if ((updateAllItems || updateItemValue) && shouldUpdate2)
+  if (updateAllItems || updateItemValue)
   {
     display1.sendBuffer();                        //välldigt långsam
-
-    previousPassedTime2 = passedTime;
     updateAllItems = false;
     updateItemValue = false;
+  }
+
+  // printPointer();     // this one take long time
+  if (current_mashTemp != previous_mashTemp || current_airTemp != previous_airTemp || DutyCycle != previousDutyCycle || settings.targetTemp != oldSettings.targetTemp)
+  {
+    updateDisp2();
+    previousPassedTime2 = passedTime;
   } 
   
   //Homeassistant
@@ -701,7 +820,7 @@ void page_MenuRoot(){//=================================================ROOT_MEN
     cursorPos = root_pntrPos;
     dispOffset = root_dispOffset;
 
-    initMenuPage(F("MAIN MENU"), 4);
+    initMenuPage(F("MAIN MENU"), 5);
     initPage = false;
   }
 
@@ -717,15 +836,15 @@ void page_MenuRoot(){//=================================================ROOT_MEN
       case 1: currPage = MENU_MISC;         changeValues[1] = false; edditing = false; return;
       case 2: currPage = MENU_MASH_PROGRAM; changeValues[2] = false; edditing = false; return;
       case 3: currPage = MENU_HOPS_PROGRAM; changeValues[3] = false; edditing = false; return;
+      case 4: currPage = MENU_WHIRLPOOL_PROGRAM; changeValues[4] = false; edditing = false; return;
     }
   }
-
   else
     doPointerNavigation();
 
-  if(!(updateAllItems | updateItemValue)) return;
+  if(!(updateAllItems || updateItemValue)) return;
 
-  for(uint8_t i = 1; i <= 4; i++)
+  for(uint8_t i = 1; i <= 5; i++)
   {
     if(menuItemPrintable(1, i))
     {
@@ -735,6 +854,7 @@ void page_MenuRoot(){//=================================================ROOT_MEN
         case 2: display1.print(F("MISC               ")); break;
         case 3: display1.print(F("MASH PROGRAM       ")); break;
         case 4: display1.print(F("HOPS PROGRAM       ")); break;
+        case 5: display1.print(F("WHIRLPOOL PROGRAM  ")); break;
       }
     }
 
@@ -753,154 +873,236 @@ void page_MENU_MODE(){//=================================================MODE===
   {
     cursorPos = 0;
     dispOffset = 0;
-    initMenuPage(F("MODE"), 4);
-    changeValue = false;
+    initMenuPage(F("MODE"), 6);
     initPage = false;
   }
 
-  if(menuItemPrintable(1,1)){display1.print(F("CONTROL MODE        "));}
-  if(menuItemPrintable(1,2)){display1.print(F("IDENT MODE          "));}
-  if(menuItemPrintable(1,3)){display1.print(F("MANUAL MODE         "));}
-  if(menuItemPrintable(1,4)){display1.print(F("Back                "));}
-
   if(btnOk.Pressed())
   {
-    FlashPointer();
-    root_pntrPos = cursorPos;
-    root_dispOffset = dispOffset;
-    initPage = true;
     switch (cursorPos)
     {
-      case 0: currPage = MENU_CONTROL_MODE; return;
-      case 1: currPage = MENU_IDENT_MODE; return;
-      case 2: currPage = MENU_MANUAL_MODE; return;
-      case 3: currPage = MENU_ROOT; sets_Save(); initPage = true; return;
+      case 0: FlashPointer(); initPage = true; currPage = MENU_CONTROL_MODE_LQG; return;
+      case 1: FlashPointer(); initPage = true; currPage = MENU_CONTROL_MODE_PI; return;
+      case 2: FlashPointer(); initPage = true; currPage = MENU_IDENT_MODE; return;
+      case 3: FlashPointer(); initPage = true; currPage = MENU_MANUAL_MODE; return;
+      case 5: FlashPointer(); initPage = true; currPage = MENU_ROOT; sets_Save(); return;
+      default: return;
     }
   }
+  else
+    doPointerNavigation();
 
-  doPointerNavigation(); 
+
+  if(!(updateAllItems || updateItemValue)) return;
+
+  for(uint8_t i = 1; i <= 6; i++)
+  {
+    if(menuItemPrintable(1, i))
+    {
+      switch(i)
+      {
+
+        case 1: display1.print(F("CONTROL MODE (LQG)")); break;
+        case 2: display1.print(F("CONTROL MODE (PI) ")); break;
+        case 3: display1.print(F("IDENT MODE        ")); break;
+        case 4: display1.print(F("MANUAL MODE       ")); break;
+        case 5: display1.drawHLine(5, display1.getCursorY(), 120); break;
+        case 6: display1.print(F("Back              ")); break;
+      }
+    }
+  }
 }
 
-void page_MENU_CONTROL_MODE(){//=================================================CONTROL_MODE============================================
+void page_MENU_CONTROL_MODE_LQG(){//=================================================CONTROL_MODE_LQG============================================
   if(initPage)
   {
     cursorPos = 0;
     dispOffset = 0;
-    initMenuPage(F("CONTROL MODE"), 9);
-    changeValues [10];
+    initMenuPage(F("CONTROL MODE (LQG)"), 8);
+    memset(changeValues, 0, sizeof(changeValues));
     initPage = false;
   }
 
-  if(menuItemPrintable(1,1)){display1.print(F("Activate               "));}
-  if(menuItemPrintable(1,2)){display1.print(F("Setpoint =             "));}
-  if(menuItemPrintable(1,3)){display1.print(F("Kp       =             "));}
-  if(menuItemPrintable(1,4)){display1.print(F("Ki       =             "));}
-  if(menuItemPrintable(1,5)){display1.print(F("k_heat   =             "));}
-  if(menuItemPrintable(1,6)){display1.print(F("Band 1   =             "));}
-  if(menuItemPrintable(1,7)){display1.print(F("Band 2   =             "));}
-  if(menuItemPrintable(1,8)){display1.print(F("Gamma    =             "));}
-  if(menuItemPrintable(1,9)){display1.print(F("Back                   "));}
-
-  if(menuItemPrintable(10,2)){printInt32_tAtWidth((uint32_t)settings.targetTemp, 3, "C");}
-  if(menuItemPrintable(10,3)){printDoubleAtWidth(settings.Kp_mash, 4, "W/C");}
-  if(menuItemPrintable(10,4)){printDoubleAtWidth(settings.Ki_mash, 4, "W/Cs", 2);}
-  if(menuItemPrintable(10,5)){printDoubleAtWidth(settings.k_heatLoss, 4, "W/C");}
-  if(menuItemPrintable(10,6)){printDoubleAtWidth(settings.deadband1, 4, "C");}
-  if(menuItemPrintable(10,7)){printDoubleAtWidth(settings.deadband2, 3, "C");}
-  if(menuItemPrintable(10,8)){printDoubleAtWidth(settings.gamma, 4, " ", 2);}
-     
   if(btnOk.Pressed())
   {
     FlashPointer();
-    
-    switch (cursorPos)
-    {
-      case 0: changeValues [0] = !changeValues [0]; edditing = !edditing; break;
-      case 1: changeValues [1] = !changeValues [1]; edditing = !edditing; break;
-      case 2: changeValues [2] = !changeValues [2]; edditing = !edditing; break;
-      case 3: changeValues [3] = !changeValues [3]; edditing = !edditing; break;
-      case 4: changeValues [4] = !changeValues [4]; edditing = !edditing; break;
-      case 5: changeValues [5] = !changeValues [5]; edditing = !edditing; break;
-      case 6: changeValues [6] = !changeValues [6]; edditing = !edditing; break;
-      case 7: changeValues [7] = !changeValues [7]; edditing = !edditing; break;
-      case 8: currPage = MENU_MODE; sets_Save(); initPage = true; return;
-    }
+    changeValues[cursorPos] = !changeValues[cursorPos];
+    edditing = !edditing;
   }
-       if(changeValues[0]){*&settings.systemMode = MODE_CONTROL; changeValues [0] = false; updateItemValue = true; }
-  else if(changeValues[1]){incrementDecrementDouble(&settings.targetTemp, 1.0, 15.0, settings.maxElementTemp); settings.targetTemp = round(settings.targetTemp);}
-  else if(changeValues[2])incrementDecrementDouble(&settings.Kp_mash, 0.5, 0.0, 500.0);
-  else if(changeValues[3])incrementDecrementDouble(&settings.Ki_mash, 0.01, 0.0, 10.0);
-  else if(changeValues[4])incrementDecrementDouble(&settings.k_heatLoss, 0.1, 0.0, 25.0);
-  else if(changeValues[5])incrementDecrementDouble(&settings.deadband1, 0.5, settings.deadband2, 20.0);
-  else if(changeValues[6])incrementDecrementDouble(&settings.deadband2, 0.1, 0.0, settings.deadband1);
-  else if(changeValues[7])incrementDecrementDouble(&settings.gamma, 0.01, 0.0, 1.0);
+
+       if(changeValues[0]){*&settings.systemMode = MODE_CONTROL_LQG; changeValues [0] = false; updateItemValue = true; }
+  else if(changeValues[2]){incrementDecrementDouble(&settings.targetTemp, 1.0, 15.0, settings.maxMashTemp); settings.targetTemp = round(settings.targetTemp);}
+  else if(changeValues[3])incrementDecrementDouble(&settings.deadband1, 0.5, settings.deadband2, 20.0);
+  else if(changeValues[4])incrementDecrementDouble(&settings.deadband2, 0.1, 0.0, settings.deadband1);
+  else if(changeValues[5])incrementDecrementDouble(&settings.gamma, 0.01, 0.0, 1.0);
+  else if(changeValues[7]) {currPage = MENU_MODE; sets_Save(); changeValues[7] = false; initPage = true;}
   else 
     doPointerNavigation(); 
 
+  if(!(updateAllItems || updateItemValue)) return;
+
+  display1.drawVLine(9 * CHAR_X, 0, 64);
+
+  for(uint8_t i = 1; i <= 8; i++)
+  {
+    if(menuItemPrintable(1, i))
+    {
+      switch(i)
+      {
+        case 1: display1.print(F("Activate            ")); break;
+        case 2: display1.drawHLine(5, display1.getCursorY(), 120); break;
+        case 3: display1.print(F("Setpoint           ")); break;
+        case 4: display1.print(F("Band 1             ")); break;
+        case 5: display1.print(F("Band 2             ")); break;
+        case 6: display1.print(F("Gamma              ")); break;
+        case 7: display1.drawHLine(5, display1.getCursorY(), 120); break;
+        case 8: display1.print(F("Back                ")); break;
+      }
+    }
+    if(menuItemPrintable(10, i))
+    {
+      switch(i)
+      {
+        case 1: printOnOff(settings.systemMode == MODE_CONTROL_LQG); break;
+        case 3: printInt32_tAtWidth((uint32_t)settings.targetTemp, 3, "C"); break;
+        case 4: printDoubleAtWidth(settings.deadband1, 4, "C"); break;
+        case 5: printDoubleAtWidth(settings.deadband2, 3, "C"); break;
+        case 6: printDoubleAtWidth(settings.gamma, 4, " ", 2); break;
+      }
+    }
+  }
+}
+void page_MENU_CONTROL_MODE_PI(){//=================================================CONTROL_MODE_PI============================================
+  if(initPage)
+  {
+    cursorPos = 0;
+    dispOffset = 0;
+    initMenuPage(F("CONTROL MODE (PI)"), 11);
+    memset(changeValues, 0, sizeof(changeValues));
+    initPage = false;
+  }
+
+  if(btnOk.Pressed())
+  {
+    FlashPointer();
+    changeValues[cursorPos] = !changeValues[cursorPos];
+    edditing = !edditing;
+  }
+
+       if(changeValues[0]){*&settings.systemMode = MODE_CONTROL_PI; changeValues [0] = false; updateItemValue = true; }
+  else if(changeValues[2]){incrementDecrementDouble(&settings.targetTemp, 1.0, 15.0, settings.maxMashTemp); settings.targetTemp = round(settings.targetTemp);}
+  else if(changeValues[3])incrementDecrementDouble(&settings.Kp_mash, 0.5, 0.0, 500.0);
+  else if(changeValues[4])incrementDecrementDouble(&settings.Ki_mash, 0.01, 0.0, 10.0);
+  else if(changeValues[5])incrementDecrementDouble(&settings.k_heatLoss, 0.1, 0.0, 25.0);
+  else if(changeValues[6])incrementDecrementDouble(&settings.deadband1, 0.5, settings.deadband2, 20.0);
+  else if(changeValues[7])incrementDecrementDouble(&settings.deadband2, 0.1, 0.0, settings.deadband1);
+  else if(changeValues[8])incrementDecrementDouble(&settings.gamma, 0.01, 0.0, 1.0);
+  else if(changeValues[10]) {currPage = MENU_MODE; sets_Save(); changeValues[10] = false; initPage = true;}
+  else 
+    doPointerNavigation(); 
+
+  if(!(updateAllItems || updateItemValue)) return;
+
+  display1.drawVLine(9 * CHAR_X, 0, 64);
+
+  for(uint8_t i = 1; i <= 11; i++)
+  {
+    if(menuItemPrintable(1, i))
+    {
+      switch(i)
+      {
+        case 1: display1.print(F("Activate           ")); break;
+        case 2: display1.drawHLine(5, display1.getCursorY(), 120); break;
+        case 3: display1.print(F("Setpoint           ")); break;
+        case 4: display1.print(F("Kp                 ")); break;
+        case 5: display1.print(F("Ki                 ")); break;
+        case 6: display1.print(F("k_heat             ")); break;
+        case 7: display1.print(F("Band 1             ")); break;
+        case 8: display1.print(F("Band 2             ")); break;
+        case 9: display1.print(F("Gamma              ")); break;
+        case 10: display1.drawHLine(5, display1.getCursorY(), 120); break;
+        case 11: display1.print(F("Back                ")); break;
+      }
+    }
+    if(menuItemPrintable(10, i))
+    {
+      switch(i)
+      {
+        case 1: printOnOff(settings.systemMode == MODE_CONTROL_PI); break;
+        case 3: printInt32_tAtWidth((uint32_t)settings.targetTemp, 3, "C"); break;
+        case 4: printDoubleAtWidth(settings.Kp_mash, 4, "W/C"); break;
+        case 5: printDoubleAtWidth(settings.Ki_mash, 4, "W/Cs", 2); break;
+        case 6: printDoubleAtWidth(settings.k_heatLoss, 4, "W/C"); break;
+        case 7: printDoubleAtWidth(settings.deadband1, 4, "C"); break;
+        case 8: printDoubleAtWidth(settings.deadband2, 3, "C"); break;
+        case 9: printDoubleAtWidth(settings.gamma, 4, " ", 2); break;
+      }
+    }
+  }
 }
 void page_MENU_IDENT_MODE(){//=================================================IDENT_MODE============================================
   if(initPage)
   {
     cursorPos = 0;
     dispOffset = 0;
-    initMenuPage(F("IDENT MODE"), 8);
-    changeValues [10];
+    initMenuPage(F("IDENT MODE"), 6);
+    memset(changeValues, 0, sizeof(changeValues));
     initPage = false;
   }
 
-  if(menuItemPrintable(1,1)){display1.print(F("Activate               "));}
-  if(menuItemPrintable(1,2)){display1.print(F("Excit Type             "));}
-  if(menuItemPrintable(1,3)){display1.print(F("Base Power   =         "));}
-  if(menuItemPrintable(1,4)){display1.print(F("Amplitude    =         "));}
-  if(menuItemPrintable(1,5)){display1.print(F("Period       =         "));}
-  if(menuItemPrintable(1,6)){display1.print(F("Duration     =         "));}
-  if(menuItemPrintable(1,7)){display1.print(F("Start        =         "));}
-  if(menuItemPrintable(1,8)){display1.print(F("Back                   "));}
-
-  if(menuItemPrintable(10,2)){printStringAtWidth(identificationTypeToString(settings.identificationType), 4);}
-  if(menuItemPrintable(10,3)){printDoubleAtWidth(settings.u0, 4, "W");}
-  if(menuItemPrintable(10,4)){printDoubleAtWidth(settings.amplitude, 4, "W");}
-  if(menuItemPrintable(10,5)){printInt32_tAtWidth(settings.period, 4, "m");}
-  if(menuItemPrintable(10,6)){printInt32_tAtWidth(settings.duration, 4, "m");}
-  if(menuItemPrintable(10,7)){printOnOff(settings.start_stop);}
-     
   if(btnOk.Pressed())
   {
     FlashPointer();
-    
-    switch (cursorPos)
-    {
-      case 0: changeValues [0] = !changeValues [0]; edditing = !edditing; break;
-      case 1: currPage = MENU_IDENT_TYPE; initPage = true; return;
-      case 2: changeValues [2] = !changeValues [2]; edditing = !edditing; break;
-      case 3: changeValues [3] = !changeValues [3]; edditing = !edditing; break;
-      case 4: changeValues [4] = !changeValues [4]; edditing = !edditing; break;
-      case 5: changeValues [5] = !changeValues [5]; edditing = !edditing; break;
-      case 6: changeValues [6] = !changeValues [6]; edditing = !edditing; break;
-      case 7: currPage = MENU_MODE; sets_Save(); initPage = true; return;
-    }
+    changeValues[cursorPos] = !changeValues[cursorPos];
+    edditing = !edditing;
   }
+
        if(changeValues[0]){*&settings.systemMode = MODE_IDENTIFICATION; changeValues [0] = false; updateItemValue = true; }
-       if(changeValues[2]){incrementDecrementInt(&settings.u0, 1, 0.0, heaterRatedPower_W); excitation.setSine(settings.u0, settings.amplitude, settings.period * 60.0);}
-  else if(changeValues[3]){incrementDecrementInt(&settings.amplitude, 1.0, 0.0, 100.0); excitation.setSine(settings.u0, settings.amplitude, settings.period * 60.0);}
-  else if(changeValues[4]){incrementDecrementInt(&settings.period, 1.0, 0.0, 15.0); excitation.setSine(settings.u0, settings.amplitude, settings.period * 60.0);}
-  else if(changeValues[5])incrementDecrementInt(&settings.duration, 5.0, 0.0, 240.0);
-  else if(changeValues[6]){*&settings.start_stop = !*&settings.start_stop; changeValues [6] = false; updateItemValue = true; }
+  else if(changeValues[2]){currPage = MENU_IDENT_TYPE; changeValues[2] = false; initPage = true; return;}
+  else if(changeValues[3]){*&settings.start_stop = !*&settings.start_stop; changeValues [3] = false; updateItemValue = true; }
+  else if(changeValues[5]) {currPage = MENU_MODE; sets_Save(); changeValues[5] = false; initPage = true;}
   else 
     doPointerNavigation(); 
+
+  if(!(updateAllItems || updateItemValue)) return;
+
+  display1.drawVLine(10 * CHAR_X, 0, 64);
+
+  for(uint8_t i = 1; i <= 6; i++)
+  {
+    if(menuItemPrintable(1, i))
+    {
+      switch(i)
+      {
+        case 1: display1.print(F("Activate            ")); break;
+        case 2: display1.drawHLine(5, display1.getCursorY(), 120); break;
+        case 3: display1.print(F("Excit Type          ")); break;
+        case 4: display1.print(F("Start               ")); break;
+        case 5: display1.drawHLine(5, display1.getCursorY(), 120); break;
+        case 6: display1.print(F("Back                ")); break;
+      }
+    }
+    if(menuItemPrintable(11, i))
+    {
+      switch(i)
+      {
+        case 1: printOnOff(settings.systemMode == MODE_IDENTIFICATION); break;
+        case 3: printStringAtWidth(identificationTypeToString(settings.identificationType), 4); break;
+        case 4: printOnOff(settings.start_stop); break; 
+      }
+    }
+  }
+
+
 }
 void page_MENU_IDENT_TYPE(){//=================================================IDENT_TYPE============================================
   if(initPage)
   {
     cursorPos = 0;
     dispOffset = 0;
-    initMenuPage(F("IDENT TYPE"), 3);
-    changeValues [10];
+    initMenuPage(F("IDENT TYPE"), 4);
     initPage = false;
   }
-  if(menuItemPrintable(1,1)){display1.print(F("Step Response       "));}
-  if(menuItemPrintable(1,2)){display1.print(F("Sine Wave           "));}
-  if(menuItemPrintable(1,3)){display1.print(F("Back                "));}
 
   if(btnOk.Pressed())
   {
@@ -908,15 +1110,196 @@ void page_MENU_IDENT_TYPE(){//=================================================I
     
     switch (cursorPos)
     {
-      case 0: settings.identificationType = IDENT_STEP_RESPONSE; currPage = MENU_IDENT_MODE; initPage = true; return;
-      case 1: settings.identificationType = IDENT_SINE;          currPage = MENU_IDENT_MODE; initPage = true; return;
-      case 2: currPage = MENU_IDENT_MODE; sets_Save(); initPage = true; return;
+      case 0: settings.identificationType = IDENT_SINE;             currPage = MENU_IDENT_SINE; initPage = true; return;
+      case 1: settings.identificationType = IDENT_MULTI_SINE;       currPage = MENU_IDENT_MULTI_SINE; initPage = true; return;
+      case 2: settings.identificationType = IDENT_STEP_RESPONSE;    currPage = MENU_IDENT_STEP_RESPONSE; initPage = true; return;
+      case 3: currPage = MENU_IDENT_MODE; sets_Save();                                          initPage = true; return;
     }
   }
 
   doPointerNavigation(); 
+
+  
+  if(menuItemPrintable(1,1)){display1.print(F("Sine wave       "));}
+  if(menuItemPrintable(1,2)){display1.print(F("MultiSine wave  "));}
+  if(menuItemPrintable(1,3)){display1.print(F("Step Resp       "));}
+  if(menuItemPrintable(1,4)){display1.print(F("Back            "));}
 }
 
+void page_MENU_IDENT_SINE(){//=================================================IDENT_SINE============================================
+
+  if(initPage)
+  {
+    cursorPos = 0;
+    dispOffset = 0;
+    initMenuPage(F("IDENT SINE"), 6);
+    memset(changeValues, 0, sizeof(changeValues));
+    initPage = false;
+  }
+
+  
+  if(btnOk.Pressed())
+  {
+    FlashPointer();
+    changeValues[cursorPos] = !changeValues[cursorPos];
+    edditing = !edditing;
+  }
+       if(changeValues[0]){incrementDecrementInt(&settings.u0, 1, 0.0, heaterRatedPower_W); excitation.setSine(settings.u0, settings.amplitude, settings.period * 60.0);}
+  else if(changeValues[1]){incrementDecrementInt(&settings.amplitude, 1.0, 0.0, 400.0); excitation.setSine(settings.u0, settings.amplitude, settings.period * 60.0);}
+  else if(changeValues[2]){incrementDecrementInt(&settings.period, 1.0, 5.0, 60.0); excitation.setSine(settings.u0, settings.amplitude, settings.period * 60.0);}
+  else if(changeValues[3])incrementDecrementInt(&settings.duration, 5.0, 0.0, 300.0);
+  else if(changeValues[5]) {currPage = MENU_IDENT_TYPE; sets_Save(); changeValues[5] = false; initPage = true;}
+  else 
+    doPointerNavigation(); 
+
+  if(!(updateAllItems || updateItemValue)) return;
+
+  display1.drawVLine(10 * CHAR_X, 0, 64);
+
+  for(uint8_t i = 1; i <= 6; i++)
+  {
+    if(menuItemPrintable(1, i))
+    {
+      switch(i)
+      {
+        case 1: display1.print(F("Base Power          ")); break;
+        case 2: display1.print(F("Amplitude           ")); break;
+        case 3: display1.print(F("Period              ")); break;
+        case 4: display1.print(F("Duration            ")); break;
+        case 5: display1.drawHLine(5, display1.getCursorY(), 120); break;
+        case 6: display1.print(F("Back                ")); break;
+      }
+    }
+    if(menuItemPrintable(11, i))
+    {
+      switch(i)
+      {
+        case 1: printInt32_tAtWidth(settings.u0, 4, "W"); break;
+        case 2: printInt32_tAtWidth(settings.amplitude, 4, "W"); break;
+        case 3: printInt32_tAtWidth(settings.period, 4, "m"); break;
+        case 4: printInt32_tAtWidth(settings.duration, 4, "m"); break;
+      }
+    }
+  }
+}
+
+void page_MENU_IDENT_MULTI_SINE(){//=================================================IDENT_MULTI_SINE============================================
+  if(initPage)
+  {
+    cursorPos = 0;
+    dispOffset = 0;
+    initMenuPage(F("IDENT MULTI SINE"), 8);
+    memset(changeValues, 0, sizeof(changeValues));
+    initPage = false;
+  }
+
+  
+  if(btnOk.Pressed())
+  {
+    FlashPointer();
+    changeValues[cursorPos] = !changeValues[cursorPos];
+    edditing = !edditing;
+  }
+
+    auto applyMultiSine = [&](){
+    excitation.setMultiSine(settings.u0,
+                            settings.amplitude,  settings.period  * 60.0,
+                            settings.amplitude2, settings.period2 * 60.0);
+  };
+
+       if(changeValues[0]){incrementDecrementInt(&settings.u0, 1, 0.0, heaterRatedPower_W); applyMultiSine();}
+  else if(changeValues[1]){incrementDecrementInt(&settings.amplitude, 1.0, 0.0, 400.0);     applyMultiSine();}
+  else if(changeValues[2]){incrementDecrementInt(&settings.period, 1.0, 5.0, 60.0);         applyMultiSine();}
+  else if(changeValues[3]){incrementDecrementInt(&settings.amplitude2, 1.0, 0.0, 400.0);    applyMultiSine();}
+  else if(changeValues[4]){incrementDecrementInt(&settings.period2, 1.0, 5.0, 60.0);        applyMultiSine();}
+  else if(changeValues[5])incrementDecrementInt(&settings.duration, 5.0, 0.0, 300.0);
+  else if(changeValues[7]) {currPage = MENU_IDENT_TYPE; sets_Save(); changeValues[7] = false; initPage = true;}
+  else 
+    doPointerNavigation(); 
+
+  if(!(updateAllItems || updateItemValue)) return;
+
+  display1.drawVLine(10 * CHAR_X, 0, 64);
+
+  for(uint8_t i = 1; i <= 8; i++)
+  {
+    if(menuItemPrintable(1, i))
+    {
+      switch(i)
+      {
+        case 1: display1.print(F("Base Power          ")); break;
+        case 2: display1.print(F("Amplitude           ")); break;
+        case 3: display1.print(F("Period              ")); break;
+        case 4: display1.print(F("Amplitude 2         ")); break;
+        case 5: display1.print(F("Period 2            ")); break;
+        case 6: display1.print(F("Duration            ")); break;
+        case 7: display1.drawHLine(5, display1.getCursorY(), 120); break;
+        case 8: display1.print(F("Back                ")); break;
+      }
+    }
+    if(menuItemPrintable(11, i))
+    {
+      switch(i)
+      {
+        case 1: printInt32_tAtWidth(settings.u0, 4, "W"); break;
+        case 2: printInt32_tAtWidth(settings.amplitude, 4, "W"); break;
+        case 3: printInt32_tAtWidth(settings.period, 4, "m"); break;
+        case 4: printInt32_tAtWidth(settings.amplitude2, 4, "W"); break;
+        case 5: printInt32_tAtWidth(settings.period2, 4, "m"); break;
+        case 6: printInt32_tAtWidth(settings.duration, 4, "m"); break;
+      }
+    }
+  }
+}
+void page_MENU_IDENT_STEP_RESPONSE(){//=================================================IDENT_STEP_RESPONSE============================================
+  if(initPage)
+  {
+    cursorPos = 0;
+    dispOffset = 0;
+    initMenuPage(F("IDENT STEP RESPONSE"), 4);
+    memset(changeValues, 0, sizeof(changeValues));
+    initPage = false;
+  }
+
+  if(btnOk.Pressed())
+  {
+    FlashPointer();
+    changeValues[cursorPos] = !changeValues[cursorPos];
+    edditing = !edditing;
+  }
+
+       if(changeValues[0]){ incrementDecrementInt(&settings.u0,       1.0, 0.0, heaterRatedPower_W); excitation.setStep(settings.u0); }
+  else if(changeValues[1])  incrementDecrementInt(&settings.duration,  5.0, 0.0, 300.0);
+  else if(changeValues[3]){ currPage = MENU_IDENT_TYPE; sets_Save(); changeValues[2] = false; initPage = true; }
+  else
+    doPointerNavigation();
+
+  if(!(updateAllItems || updateItemValue)) return;
+
+  display1.drawVLine(10 * CHAR_X, 0, 64);
+
+  for(uint8_t i = 1; i <= 4; i++)
+  {
+    if(menuItemPrintable(1, i))
+    {
+      switch(i)
+      {
+        case 1: display1.print(F("Step Power          ")); break;
+        case 2: display1.print(F("Duration            ")); break;
+        case 3: display1.drawHLine(5, display1.getCursorY(), 120); break;
+        case 4: display1.print(F("Back                ")); break;
+      }
+    }
+    if(menuItemPrintable(11, i))
+    {
+      switch(i)
+      {
+        case 1: printInt32_tAtWidth(settings.u0,       4, "W"); break;
+        case 2: printInt32_tAtWidth(settings.duration, 4, "m"); break;
+      }
+    }
+  }
+}
 void page_MENU_MANUAL_MODE(){//=================================================MANUAL_MODE============================================
 
   if(initPage)
@@ -924,16 +1307,10 @@ void page_MENU_MANUAL_MODE(){//=================================================
     cursorPos = 0;
     dispOffset = 0;
     initMenuPage(F("MANUAL MODE"), 3);
-    changeValues[10];
+    memset(changeValues, 0, sizeof(changeValues));
     initPage = false;
   }
-
-  if(menuItemPrintable(1,1)){display1.print(F("Activate               "));}
-  if(menuItemPrintable(1,2)){display1.print(F("Power         =        "));}
-  if(menuItemPrintable(1,3)){display1.print(F("Back                   "));}
-
-  if(menuItemPrintable(10,2)){printDoubleAtWidth(settings.manualPower, 4, "W", 1);}
-
+  
   if(btnOk.Pressed())
   {
     FlashPointer();
@@ -947,9 +1324,17 @@ void page_MENU_MANUAL_MODE(){//=================================================
   }
 
        if(changeValues[0]){*&settings.systemMode = MODE_MANUAL; changeValues [0] = false; updateItemValue = true; }
-  else if(changeValues[1]) incrementDecrementDouble(&settings.manualPower, 5.0, 0.0, heaterRatedPower_W);
+  else if(changeValues[1]) incrementDecrementDouble(&settings.manualPower, 1.0, 0.0, heaterRatedPower_W);
   else 
     doPointerNavigation();
+
+  if(menuItemPrintable(1,1)){display1.print(F("Activate               "));}
+  if(menuItemPrintable(1,2)){display1.print(F("Power                  "));}
+  if(menuItemPrintable(1,3)){display1.print(F("Back                   "));}
+
+  if(menuItemPrintable(10,1)){printOnOff(settings.systemMode == MODE_MANUAL);}
+  if(menuItemPrintable(10,2)){printDoubleAtWidth(settings.manualPower, 4, "W", 1);}
+
 }
 
 void page_MENU_MISC(){//=================================================MISC==========================================================
@@ -957,29 +1342,80 @@ void page_MENU_MISC(){//=================================================MISC===
   {
     cursorPos = 0;
     dispOffset = 0;
-    initMenuPage(F("MISC"), 9);
-    changeValues [10];
+    initMenuPage(F("MISC"), 11);
+    memset(changeValues, 0, sizeof(changeValues));
     initPage = false;
   }
-   
-  if(menuItemPrintable(1,1)){display1.print(F("POWER        =     "));}
-  if(menuItemPrintable(1,2)){display1.print(F("PUMP         =     "));}
-  if(menuItemPrintable(1,3)){display1.print(F("FiltTemp  =     "));}
-  if(menuItemPrintable(1,4)){display1.print(F("FiltDC       =     "));}
-  if(menuItemPrintable(1,5)){display1.print(F("max_Ele_temp =     "));}
-  if(menuItemPrintable(1,6)){display1.print(F("TimeToIdle   =     "));}
-  if(menuItemPrintable(1,7)){display1.print(F("AlarmVolume  =     "));}
-  if(menuItemPrintable(1,8)){display1.print(F("AlarmTime   =     "));}
-  if(menuItemPrintable(1,9)){display1.print(F("Back              "));}
 
-  if(menuItemPrintable(12,1)){printOnOff(settings.power);}
-  if(menuItemPrintable(12,2)){printOnOff(settings.pump);}
-  if(menuItemPrintable(12,3)){printDoubleAtWidth(settings.filter_adc1, 3, " ", 2);}
-  if(menuItemPrintable(12,4)){printDoubleAtWidth(settings.filterDC, 3, " ", 2);}
-  if(menuItemPrintable(12,5)){printInt32_tAtWidth(settings.maxElementTemp, 3, "C");}
-  if(menuItemPrintable(12,6)){printInt32_tAtWidth(settings.timeBeforeDisable, 3, "m");}
-  if(menuItemPrintable(12,7)){printInt32_tAtWidth(settings.alarmVolume, 3, "%");}
-  if(menuItemPrintable(12,8)){printInt32_tAtWidth(settings.alarmTime, 3, "s");}
+  if(btnOk.Pressed())
+  {
+    FlashPointer();
+    changeValues[cursorPos] = !changeValues[cursorPos];
+    edditing = !edditing;
+  }
+
+       if(changeValues[0]){*&settings.power = !*&settings.power; changeValues [0] = false; updateItemValue = true; }
+  else if(changeValues[1] && waterDetected){*&settings.pump = !*&settings.pump; changeValues [1] = false; updateItemValue = true; }
+  else if(changeValues[2])incrementDecrementDouble(&settings.filter_adc1, 0.01f, 0.0f, 0.99f);
+  else if(changeValues[3])incrementDecrementDouble(&settings.filterDC, 0.01f, 0.0f, 0.99f);
+  else if(changeValues[4])incrementDecrementInt(&settings.maxMashTemp, 1, 5, 110);
+  else if(changeValues[5])incrementDecrementInt(&settings.timeBeforeDisable, 1, 1, 90);
+  else if(changeValues[6])incrementDecrementInt(&settings.alarmVolume, 1, 0, 100);
+  else if(changeValues[7])incrementDecrementInt(&settings.alarmTime, 1, 1, 30);
+  else if(changeValues[8]){currPage = MENU_BREWING_LOCATION; changeValues[8] = false; initPage = true; return;}
+  else if(changeValues[10]){currPage = MENU_ROOT; sets_Save(); initPage = true; changeValues[10] = false; return;}
+  else 
+    doPointerNavigation(); 
+
+  if(!(updateAllItems | updateItemValue)) return;
+   
+  display1.drawVLine(11 * CHAR_X, 0, 64);
+
+  for(uint8_t i = 1; i <= 11; i++)
+  {
+    if(menuItemPrintable(1, i))
+    {
+      switch(i)
+      {
+        case 1: display1.print(F("Power             ")); break;  
+        case 2: display1.print(F("Pump              ")); break;
+        case 3: display1.print(F("Filter Temp       ")); break;
+        case 4: display1.print(F("Filter DC         ")); break;
+        case 5: display1.print(F("Max Temp          ")); break;
+        case 6: display1.print(F("Disable disp      ")); break;
+        case 7: display1.print(F("Alarm Volume      ")); break;
+        case 8: display1.print(F("Alarm Time        ")); break;
+        case 9: display1.print(F("Location          ")); break;
+        case 10: display1.drawHLine(5, display1.getCursorY(), 120); break;
+        case 11: display1.print(F("Back              ")); break;
+      }
+    }
+    if(menuItemPrintable(12, i))
+    {
+      switch(i)
+      {
+        case 1: printOnOff(settings.power); break;
+        case 2: printOnOff(settings.pump); break;
+        case 3: printDoubleAtWidth(settings.filter_adc1, 3, " ", 2); break;
+        case 4: printDoubleAtWidth(settings.filterDC, 3, " ", 2); break;
+        case 5: printInt32_tAtWidth(settings.maxMashTemp, 3, "C"); break;
+        case 6: printInt32_tAtWidth(settings.timeBeforeDisable, 3, "m"); break;
+        case 7: printInt32_tAtWidth(settings.alarmVolume, 3, "%"); break;
+        case 8: printInt32_tAtWidth(settings.alarmTime, 3, "s"); break;
+        case 9: printStringAtWidth(brewingLocationToString(settings.brewingLocation), 4); break;
+      }
+    }
+  }
+}
+
+void page_MENU_BREWING_LOCATION(){//=================================================BREWING_LOCATION============================================
+  if(initPage)
+  {
+    cursorPos = 0;
+    dispOffset = 0;
+    initMenuPage(F("BREWING LOCATION"), 3);
+    initPage = false;
+  }
 
   if(btnOk.Pressed())
   {
@@ -987,28 +1423,17 @@ void page_MENU_MISC(){//=================================================MISC===
     
     switch (cursorPos)
     {
-      case 0: changeValues [0] = !changeValues [0]; edditing = !edditing; break; 
-      case 1: changeValues [1] = !changeValues [1]; edditing = !edditing; break; 
-      case 2: changeValues [2] = !changeValues [2]; edditing = !edditing; break; 
-      case 3: changeValues [3] = !changeValues [3]; edditing = !edditing; break;
-      case 4: changeValues [4] = !changeValues [4]; edditing = !edditing; break; 
-      case 5: changeValues [5] = !changeValues [5]; edditing = !edditing; break;
-      case 6: changeValues [6] = !changeValues [6]; edditing = !edditing; break;
-      case 7: changeValues [7] = !changeValues [7]; edditing = !edditing; break;
-      case 8: currPage = MENU_ROOT; sets_Save(); initPage = true; return;
+      case 0: settings.brewingLocation = OutDoor; currPage = MENU_MISC; initPage = true; return;
+      case 1: settings.brewingLocation = InDoor;  currPage = MENU_MISC; initPage = true; return;
+      case 2: currPage = MENU_MISC; sets_Save(); initPage = true; return;
     }
   }
 
-       if(changeValues[0]){*&settings.power = !*&settings.power; changeValues [0] = false; updateItemValue = true; }
-       if(changeValues[1] && waterDetected){*&settings.pump = !*&settings.pump; changeValues [1] = false; updateItemValue = true; }
-  else if(changeValues[2])incrementDecrementDouble(&settings.filter_adc1, 0.01f, 0.0f, 0.99f);
-  else if(changeValues[3])incrementDecrementDouble(&settings.filterDC, 0.01f, 0.0f, 0.99f);
-  else if(changeValues[4])incrementDecrementInt(&settings.maxElementTemp, 1, 15, 100);
-  else if(changeValues[5])incrementDecrementInt(&settings.timeBeforeDisable, 1, 1, 90);
-  else if(changeValues[6])incrementDecrementInt(&settings.alarmVolume, 1, 0, 100);
-  else if(changeValues[7])incrementDecrementInt(&settings.alarmTime, 1, 1, 30);
-  else 
-    doPointerNavigation(); 
+  doPointerNavigation(); 
+
+  if(menuItemPrintable(1,1)){display1.print(F("Outdoor             "));}
+  if(menuItemPrintable(1,2)){display1.print(F("Indoor              "));}
+  if(menuItemPrintable(1,3)){display1.print(F("Back                "));}
 }
 
 void page_MENU_MASH_PROGRAM(){//=================================================MASH_PROGRAM====================================================
@@ -1016,87 +1441,100 @@ void page_MENU_MASH_PROGRAM(){//================================================
   {
     cursorPos = 0;
     dispOffset = 0;
-    initMenuPage(F("Mash Program"), 13);
+    initMenuPage(F("Mash Program"), 11);
     memset(changeValues, 0, sizeof(changeValues));
     initPage = false;
   }
 
-  if(menuItemPrintable(1,1)){display1.print(F("Auto Mode   =            "));}
-  if(menuItemPrintable(1,3)){display1.print(F("Mash Temp1  =            "));}
-  if(menuItemPrintable(1,4)){display1.print(F("Mash Time1  =            "));}
-  if(menuItemPrintable(1,5)){display1.print(F("Mash Temp2  =            "));}
-  if(menuItemPrintable(1,6)){display1.print(F("Mash Time2  =            "));}
-  if(menuItemPrintable(1,7)){display1.print(F("Mash Temp3  =            "));}
-  if(menuItemPrintable(1,8)){display1.print(F("Mash Time3  =            "));}
-  if(menuItemPrintable(1,9)){display1.print(F("Mash Temp4  =            "));}
-  if(menuItemPrintable(1,10)){display1.print(F("Mash Time4  =            "));}
-  if(menuItemPrintable(1,11)){display1.print(F("Mash Temp5  =            "));}
-  if(menuItemPrintable(1,12)){display1.print(F("Mash Time5  =            "));}
-  if(menuItemPrintable(1,13)){display1.print(F("Back                     "));}
-
-  if(menuItemPrintable(12,1)){printOnOff(settings.autoModeMash);}
-  if(menuItemPrintable(1,2)){printDoubleAtWidth(passedTimeS/60.0, 3, "m");}
-  if(menuItemPrintable(12,2)){printInt32_tAtWidth(settings.targetTemp, 3, "C");}
-  if(menuItemPrintable(12,3)){printInt32_tAtWidth(settings.mashTemps[0], 3, "C");}
-  if(menuItemPrintable(12,4)){printInt32_tAtWidth(settings.mashTimes[0], 3, "m");}
-  if(menuItemPrintable(12,5)){printInt32_tAtWidth(settings.mashTemps[1], 3, "C");}  
-  if(menuItemPrintable(12,6)){printInt32_tAtWidth(settings.mashTimes[1], 3, "m");}
-  if(menuItemPrintable(12,7)){printInt32_tAtWidth(settings.mashTemps[2], 3, "C");}
-  if(menuItemPrintable(12,8)){printInt32_tAtWidth(settings.mashTimes[2], 3, "m");}
-  if(menuItemPrintable(12,9)){printInt32_tAtWidth(settings.mashTemps[3], 3, "C");}
-  if(menuItemPrintable(12,10)){printInt32_tAtWidth(settings.mashTimes[3], 3, "m");}
-  if(menuItemPrintable(12,11)){printInt32_tAtWidth(settings.mashTemps[4], 3, "C");}
-  if(menuItemPrintable(12,12)){printInt32_tAtWidth(settings.mashTimes[4], 3, "m");}
-
   if(btnOk.Pressed())
   {
     FlashPointer();
-    
-    switch (cursorPos)
-    {
-      case 0: changeValues [0] = !changeValues [0]; edditing = !edditing; break;
-      case 2: changeValues [1] = !changeValues [1]; edditing = !edditing; break;
-      case 3: changeValues [2] = !changeValues [2]; edditing = !edditing; break;
-      case 4: changeValues [3] = !changeValues [3]; edditing = !edditing; break;
-      case 5: changeValues [4] = !changeValues [4]; edditing = !edditing; break;
-      case 6: changeValues [5] = !changeValues [5]; edditing = !edditing; break;
-      case 7: changeValues [6] = !changeValues [6]; edditing = !edditing; break;
-      case 8: changeValues [7] = !changeValues [7]; edditing = !edditing; break;
-      case 9: changeValues [8] = !changeValues [8]; edditing = !edditing; break;
-      case 10: changeValues [9] = !changeValues [9]; edditing = !edditing; break;
-      case 11: changeValues [10] = !changeValues [10]; edditing = !edditing; break;
-      case 12: currPage = MENU_ROOT; sets_Save(); initPage = true; return; 
-    }
+    changeValues[cursorPos] = !changeValues[cursorPos];
+    edditing = !edditing;
   }
 
   if(changeValues[0])
   {
-    *&settings.autoModeMash = !*&settings.autoModeMash;
-    if(settings.autoModeMash && waterDetected){settings.pump = true;}
+    *&settings.startMashProgram = !*&settings.startMashProgram;
+    *&settings.startHopProgram = false;
+    *&settings.startWhirlpoolProgram = false;
+    if(settings.startMashProgram && waterDetected){settings.pump = true;}
     else{settings.pump = false;}
     changeValues [0] = false;
     updateItemValue = true; 
   } 
-  else if(changeValues[1])incrementDecrementInt(&settings.mashTemps[0], 1, 15, settings.maxElementTemp);
-  else if(changeValues[2])incrementDecrementInt(&settings.mashTimes[0], 1, 0, 90);
-  else if(changeValues[3])incrementDecrementInt(&settings.mashTemps[1], 1, 15, settings.maxElementTemp);
-  else if(changeValues[4])incrementDecrementInt(&settings.mashTimes[1], 1, 0, 90);
-  else if(changeValues[5])incrementDecrementInt(&settings.mashTemps[2], 1, 15, settings.maxElementTemp);
-  else if(changeValues[6])incrementDecrementInt(&settings.mashTimes[2], 1, 0, 90);
-  else if(changeValues[7])incrementDecrementInt(&settings.mashTemps[3], 1, 15, settings.maxElementTemp);
-  else if(changeValues[8])incrementDecrementInt(&settings.mashTimes[3], 1, 0, 90);
-  else if(changeValues[9])incrementDecrementInt(&settings.mashTemps[4], 1, 15, settings.maxElementTemp);
-  else if(changeValues[10])incrementDecrementInt(&settings.mashTimes[4], 1, 0, 90);
-  else if(changeValues[11])
+  else if(changeValues[3])incrementDecrementInt(&settings.mashTemps[0], 1, 15, settings.maxMashTemp);
+  else if(changeValues[4])incrementDecrementInt(&settings.mashTemps[1], 1, 15, settings.maxMashTemp);
+  else if(changeValues[5])incrementDecrementInt(&settings.mashTemps[2], 1, 15, settings.maxMashTemp);
+  else if(changeValues[6])incrementDecrementInt(&settings.mashTimes[0], 1, 0, 90);
+  else if(changeValues[7])incrementDecrementInt(&settings.mashTimes[1], 1, 0, 90);
+  else if(changeValues[8])incrementDecrementInt(&settings.mashTimes[2], 1, 0, 90);
+  else if(changeValues[10])
   {
     currPage = MENU_ROOT; 
     sets_Save(); 
     initPage = true; 
-    changeValues [12] = false;
+    changeValues [10] = false;
     updateItemValue = true; 
   }
   else 
     doPointerNavigation();
+
+  static uint32_t lastUpdate = 0;
+
+  if (passedTimeS_mashProgram - lastUpdate >= 6)
+  {
+      updateAllItems = true;
+      lastUpdate = passedTimeS_mashProgram;
+  }
+
+  if(!(updateAllItems || updateItemValue)) return;
+
+  display1.drawVLine(8 * CHAR_X, 0, 64);
+
+  for(uint8_t i = 1; i <= 11; i++)
+  {
+    if(menuItemPrintable(1, i))
+    {
+      switch(i)
+      {
+        case 1: display1.print(F("Timer         ")); break;
+        case 2: printDoubleAtWidth(passedTimeS_mashProgram/60.0, 3, "m");  break;
+        case 3: display1.drawHLine(5, display1.getCursorY(), 120); break;
+        case 4: display1.print(F("Temp 1               ")); break;
+        case 5: display1.print(F("Temp 2               ")); break;
+        case 6: display1.print(F("Temp 3               ")); break;
+        case 7: display1.print(F("Time 1               ")); break;
+        case 8: display1.print(F("Time 2               ")); break;
+        case 9: display1.print(F("Time 3               ")); break;
+        case 10: display1.drawHLine(5, display1.getCursorY(), 120); break;
+        case 11: display1.print(F("Back                 ")); break;
+      }
+    }
+    if(menuItemPrintable(9, i))
+    {
+      switch(i)
+      {
+        case 1: printOnOff(settings.startMashProgram); break;
+        case 2: printInt32_tAtWidth(settings.targetTemp, 3, "C"); break;
+
+        case 4: printInt32_tAtWidth(settings.mashTemps[0], 3, "C"); break;
+        case 5: printInt32_tAtWidth(settings.mashTemps[1], 3, "C"); break;  
+        case 6: printInt32_tAtWidth(settings.mashTemps[2], 3, "C"); break;
+
+      }
+    }
+
+    if(menuItemPrintable(12, i))
+    {
+      switch(i)
+      {
+        case 4: printInt32_tAtWidth(settings.mashTimes[0], 3, "m"); break;
+        case 5: printInt32_tAtWidth(settings.mashTimes[1], 3, "m"); break;
+        case 6: printInt32_tAtWidth(settings.mashTimes[2], 3, "m"); break;
+      }
+    }
+  }
 }
 
 void page_MENU_HOPS_PROGRAM(){//=================================================HOPS_PROGRAM====================================================
@@ -1104,65 +1542,178 @@ void page_MENU_HOPS_PROGRAM(){//================================================
   {
     cursorPos = 0;
     dispOffset = 0;
-    initMenuPage(F("Hops Program"), 6);
-    changeValues [10];
+    initMenuPage(F("Hops Program"), 11);
+    memset(changeValues, 0, sizeof(changeValues));
     initPage = false;
   }
-
-  if(menuItemPrintable(1,1)){display1.print(F("Auto   =            "));}
-  if(menuItemPrintable(1,3)){display1.print(F("Time1  =            "));}
-  if(menuItemPrintable(1,4)){display1.print(F("Time2  =            "));}
-  if(menuItemPrintable(1,5)){display1.print(F("Time3  =            "));}
-  if(menuItemPrintable(1,6)){display1.print(F("Back                "));}
-
-  if(menuItemPrintable(12,1)){printOnOff(settings.autoModeMash);}
-  if(menuItemPrintable(1,2)){printDoubleAtWidth(passedTimeS/60.0, 3, "m");}
-  if(menuItemPrintable(12,2)){printInt32_tAtWidth(settings.targetTemp, 3, "C");}
-  if(menuItemPrintable(12,3)){printInt32_tAtWidth(settings.hopTimes[0], 3, "m");}
-  if(menuItemPrintable(12,4)){printInt32_tAtWidth(settings.hopTimes[1], 3, "m");}
-  if(menuItemPrintable(12,5)){printInt32_tAtWidth(settings.hopTimes[2], 3, "m");}
-   
+  
   if(btnOk.Pressed())
   {
     FlashPointer();
-    
-    switch (cursorPos)
-    {
-      case 0: changeValues [0] = !changeValues [0]; edditing = !edditing; break;
-      case 2: changeValues [1] = !changeValues [1]; edditing = !edditing; break;
-      case 3: changeValues [2] = !changeValues [2]; edditing = !edditing; break;
-      case 4: changeValues [3] = !changeValues [3]; edditing = !edditing; break;
-      case 5: currPage = MENU_ROOT; sets_Save(); initPage = true; return; 
-    }
+    changeValues[cursorPos] = !changeValues[cursorPos];
+    edditing = !edditing;
   }
 
   if(changeValues[0])
   {
-    *&settings.autoModeMash = !*&settings.autoModeMash;
+    *&settings.startHopProgram = !*&settings.startHopProgram;
+    *&settings.startMashProgram = false;
+    *&settings.startWhirlpoolProgram = false;
+    settings.targetTemp = settings.boilTemp;
     changeValues [0] = false;
     updateItemValue = true; 
   } 
 
-  else if(changeValues[1])incrementDecrementInt(&settings.hopTimes[0], 1, 0, 90);
-  else if(changeValues[2])incrementDecrementInt(&settings.hopTimes[1], 1, 0, 90);
-  else if(changeValues[3])incrementDecrementInt(&settings.hopTimes[2], 1, 0, 90);
-  else if(changeValues[4])
+  else if(changeValues[3])incrementDecrementInt(&settings.boilTime, 1, 60, 120);
+  else if(changeValues[4]){incrementDecrementInt(&settings.boilTemp, 1, 90, settings.maxMashTemp); updateAllItems = true;}
+  else if(changeValues[6])incrementDecrementInt(&settings.hopTimes[0], 1, 0, 90);
+  else if(changeValues[7])incrementDecrementInt(&settings.hopTimes[1], 1, 0, 90);
+  else if(changeValues[8])incrementDecrementInt(&settings.hopTimes[2], 1, 0, 90);
+  else if(changeValues[10])
   {
     currPage = MENU_ROOT; 
     sets_Save(); 
     initPage = true; 
-    changeValues [3] = false;
+    changeValues [10] = false;
     updateItemValue = true; 
   }
   else 
     doPointerNavigation();
+
+  static uint32_t lastUpdate = 0;
+
+  if (passedTimeS_hopProgram - lastUpdate >= 6)
+  {
+      updateAllItems = true;
+      lastUpdate = passedTimeS_hopProgram;
+  }
+
+  if(!(updateAllItems || updateItemValue)) return; 
+
+  display1.drawVLine(10 * CHAR_X, 0, 64);
+
+  for(uint8_t i = 1; i <= 11; i++)
+  {
+    if(menuItemPrintable(1, i))
+    {
+      switch(i)
+      {
+        case 1: display1.print(F("Timer             ")); break;
+        case 2: printDoubleAtWidth(passedTimeS_hopProgram/60.0, 3, "m");  break;
+        case 3: display1.drawHLine(5, display1.getCursorY(), 120); break;
+        case 4: display1.print(F("Boil Time               ")); break;
+        case 5: display1.print(F("Boil Temp               ")); break;
+        case 6: display1.drawHLine(5, display1.getCursorY(), 120); break;
+        case 7: display1.print(F("Hop Time 1              ")); break;
+        case 8: display1.print(F("Hop Time 2              ")); break;
+        case 9: display1.print(F("Hop Time 3              ")); break;
+        case 10: display1.drawHLine(5, display1.getCursorY(), 120); break;
+        case 11: display1.print(F("Back                    ")); break;
+      }
+    }
+    if(menuItemPrintable(12, i))
+    {
+      switch(i)
+      {
+        case 1: printOnOff(settings.startHopProgram); break;
+        case 2: printInt32_tAtWidth(settings.targetTemp, 3, "C"); break;
+        case 4: printInt32_tAtWidth(settings.boilTime, 3, "m"); break;
+        case 5: printInt32_tAtWidth(settings.boilTemp, 3, "C"); break;
+        case 7: printInt32_tAtWidth(settings.hopTimes[0], 3, "m"); break;
+        case 8: printInt32_tAtWidth(settings.hopTimes[1], 3, "m"); break;
+        case 9: printInt32_tAtWidth(settings.hopTimes[2], 3, "m"); break;
+      }
+    }
+  }
 }
 
-//======================================================TOOLS - menu Internals==================================================
-void initMenuPage(String title, uint8_t itemCount){
+void page_MENU_WHIRLPOOL_PROGRAM()//=================================================WHIRLPOOL_PROGRAM====================================================
+{
+  if(initPage)
+  {
+    cursorPos = 0;
+    dispOffset = 0;
+    initMenuPage(F("Whirlpool Program"), 7);
+    memset(changeValues, 0, sizeof(changeValues));
+    initPage = false;
+  }
+  
+  if(btnOk.Pressed())
+  {
+    FlashPointer();
+    changeValues[cursorPos] = !changeValues[cursorPos];
+    edditing = !edditing;
+  }
+
+  if(changeValues[0])
+  {
+    *&settings.startWhirlpoolProgram = !*&settings.startWhirlpoolProgram;
+    *&settings.startHopProgram = false;
+    *&settings.startMashProgram = false;
+    settings.targetTemp = settings.whirlpoolTemp;
+    changeValues [0] = false;
+    updateItemValue = true; 
+  } 
+
+  else if(changeValues[3])incrementDecrementInt(&settings.whirlpoolTime, 1, 1, 120);
+  else if(changeValues[4]){incrementDecrementInt(&settings.whirlpoolTemp, 1, 60, settings.maxMashTemp); updateAllItems = true;}
+  else if(changeValues[6])
+  {
+    currPage = MENU_ROOT; 
+    sets_Save(); 
+    initPage = true; 
+    changeValues [6] = false;
+    updateItemValue = true; 
+  }
+  else 
+    doPointerNavigation();
+
+  static uint32_t lastUpdate = 0;
+
+  if (passedTimeS_whirlpoolProgram - lastUpdate >= 6)
+  {
+      updateAllItems = true;
+      lastUpdate = passedTimeS_whirlpoolProgram;
+  }
+
+  if(!(updateAllItems || updateItemValue)) return; 
+
+  display1.drawVLine(12 * CHAR_X, 0, 64);
+
+  for(uint8_t i = 1; i <= 7; i++)
+  {
+    if(menuItemPrintable(1, i))
+    {
+      switch(i)
+      {
+        case 1: display1.print(F("Timer             ")); break;
+        case 2: printDoubleAtWidth(passedTimeS_whirlpoolProgram/60.0, 3, "m");  break;
+        case 3: display1.drawHLine(5, display1.getCursorY(), 120); break;
+        case 4: display1.print(F("Whirlpool Time               ")); break;
+        case 5: display1.print(F("Whirlpool Temp               ")); break;
+        case 6: display1.drawHLine(5, display1.getCursorY(), 120); break;
+        case 7: display1.print(F("Back                    ")); break;
+      }
+    }
+    if(menuItemPrintable(13, i))
+    {
+      switch(i)
+      {
+        case 1: printOnOff(settings.startWhirlpoolProgram); break;
+        case 2: printInt32_tAtWidth(settings.targetTemp, 3, "C"); break;
+        case 4: printInt32_tAtWidth(settings.whirlpoolTime, 3, "m"); break;
+        case 5: printInt32_tAtWidth(settings.whirlpoolTemp, 3, "C"); break;
+      }
+    }
+  }
+}
+
+void initMenuPage(String title, uint8_t itemCount){//=======================TOOLS - menu Internals==================================================
   display1.clearBuffer();
-  printPointer();
   uint8_t fillCnt = (DISP_CHAR_WIDTH - title.length()) / 2;
+  display1.setCursor(CHAR_X * fillCnt, 0);
+  display1.print(title);
+  printPointer();
  
   itemCnt = itemCount;
   flashCntr = 0;
@@ -1197,7 +1748,7 @@ void doPointerNavigation()
     }
     timeLastTouched = millis()/1000.0/60.0; // Update last touched time
     
-    // Serial.print("Direction: ");
+    // Serial.print(", Direction: ");
     // Serial.print(direction);
     // Serial.print(",\t\tNew Cursor Position: ");
     // Serial.print(newCursorPos);
@@ -1223,7 +1774,7 @@ void incrementDecrementInt(int16_t *v, int16_t amount, int16_t min, int16_t max)
             *v = max;
         }
 
-        updateItemValue = true;
+        updateAllItems = true; //updateItemValue = true; changed
         timeLastTouched = millis()/1000.0/60.0;
     }
 
@@ -1245,7 +1796,7 @@ void incrementDecrementFloat(float *v, float amount, float min, float max)
         else 
           *v = max;
 
-        updateItemValue = true;
+        updateAllItems = true; //updateItemValue = true; changed
         timeLastTouched = millis()/1000.0/60.0;
     }
 
@@ -1279,7 +1830,7 @@ void incrementDecrementDouble(double *v, double amount, double min, double max)
       else 
         *v = max;
 
-      updateItemValue = true;
+      updateAllItems = true; //updateItemValue = true; changed
       timeLastTouched = millis()/1000.0/60.0;
     }
 
@@ -1296,7 +1847,7 @@ bool isFlashChanged(){
 }
 
 bool menuItemPrintable(uint8_t xPos, uint8_t yPos){
-  if(!(updateAllItems || (updateItemValue && cursorPos == yPos))){return false;}
+  if(!(updateAllItems || (updateItemValue && (cursorPos + 1) == yPos))){return false;}
   uint8_t yMaxOffset = 0;
   if(yPos > DISP_ITEM_ROWS) {yMaxOffset = yPos - DISP_ITEM_ROWS;}
   if(dispOffset <= (yPos) && dispOffset >= yMaxOffset){display1.setCursor(CHAR_X*xPos, CHAR_Y*(yPos - dispOffset)); return true;}
@@ -1304,7 +1855,7 @@ bool menuItemPrintable(uint8_t xPos, uint8_t yPos){
 }
 
 bool menuItemPrintableDisp2(uint8_t xPos, uint8_t yPos){ 
-  if(!(updateAllItems || (updateItemValue && cursorPos == yPos))){return false;}
+  if(!(updateAllItems || (updateItemValue && (cursorPos + 1) == yPos))){return false;}
   uint8_t yMaxOffset = 0;
   if(yPos > DISP2_ITEM_ROWS) {yMaxOffset = yPos - DISP2_ITEM_ROWS;}
   if(0 <= (yPos) && 0 >= yMaxOffset){display2.setCursor(DISP2_CHAR_X*xPos, DISP2_CHAR_Y*(yPos)); return true;}
@@ -1314,25 +1865,20 @@ bool menuItemPrintableDisp2(uint8_t xPos, uint8_t yPos){
 //======================================================TOOLS_display========================================================
 void printPointer(){
   //Serial.println("printPointer");
-  display1.drawStr(0, 1*CHAR_Y, " ");
-  display1.drawStr(0, 2*CHAR_Y, " ");
-  display1.drawStr(0, 3*CHAR_Y, " ");
-  display1.drawStr(0, 4*CHAR_Y, " ");
+  for(uint8_t i=1; i<=DISP_ITEM_ROWS; i++) display1.drawStr(0, i*CHAR_Y, " ");
   display1.drawStr(0, (cursorPos - dispOffset + 1)*CHAR_Y, "*");
-  display1.sendBuffer();
+  updateAllItems = true;
+  // display1.sendBuffer();
 }
 void FlashPointer(){
   timeLastTouched = millis()/1000.0/60.0;
-  display1.drawStr(0, 1*CHAR_Y, " ");
-  display1.drawStr(0, 2*CHAR_Y, " ");
-  display1.drawStr(0, 3*CHAR_Y, " ");
-  display1.drawStr(0, 4*CHAR_Y, " ");
-  display1.sendBuffer();                  //nytt
+  for(uint8_t i=1; i<=DISP_ITEM_ROWS; i++) display1.drawStr(0, i*CHAR_Y, " ");
+  updateAllItems = true;
 
   delay(100);
   //Serial.println("FlashPointer");
   display1.drawStr(0, (cursorPos - dispOffset + 1)*CHAR_Y, "*");
-  display1.sendBuffer();                  //nytt
+  updateAllItems = true;
 }
 
 void printOnOff(bool val){
@@ -1384,12 +1930,23 @@ void printStringAtWidth(const char* str, uint8_t width)
   }
 }
 
+const char* brewingLocationToString(BrewingLocation location)
+{
+  switch(location)
+  {
+    case OutDoor: return "OUT";
+    case InDoor:  return "IN";
+    default:       return "null";
+  }
+}
+
 const char* identificationTypeToString(IdentificationType type)
 {
   switch(type)
   {
-    case IDENT_SINE:          return "SINE";
     case IDENT_STEP_RESPONSE: return "STEP";
+    case IDENT_SINE:          return "SINE";
+    case IDENT_MULTI_SINE:    return "MULTISINE";
     default:                  return "UNKNOWN";
   }
 }
@@ -1398,7 +1955,8 @@ const char* systemModeToString(SystemMode mode)
 {
   switch(mode)
   {
-    case MODE_CONTROL:        return "CONTROL";
+    case MODE_CONTROL_LQG:    return "LQG CONTROL";
+    case MODE_CONTROL_PI:    return "PI CONTROL";
     case MODE_IDENTIFICATION: return "IDENT";
     case MODE_MANUAL:         return "MANUAL";
     default:                  return "UNKNOWN";
@@ -1445,31 +2003,87 @@ void sets_Save()
   }
 }
 
-void updateModelForSetpoint(LQGController& controller, double Tset, ModelID& activeModel)
+void updateModelForCurrentTemp(LQGController& controller, double T, ModelID& activeModel)
 {
     // --------- DETERMINE DESIRED MODEL ----------
-    ModelID desiredModel;
+    ModelID desiredModel = activeModel;  // stay by default
+    const float H = 2.0;
+    const float boilTransition = settings.boilTemp - settings.deadband1 - H; //100 - 8 - 1 = 91, 93.5 - 8 - 1 = 84.5
 
-    if (Tset < 56)
-        desiredModel = MODEL_50;
-    else if (Tset < 69)
-        desiredModel = MODEL_65;
-    else
-        desiredModel = MODEL_75;
+   switch (activeModel)
+    {
+        case MODEL_50:
+            if (T > 56 + H)
+                desiredModel = MODEL_65;
+            break;
+
+        case MODEL_65:
+            if (T > 69 + H)
+                desiredModel = MODEL_75;
+            else if (T < 56 - H)
+                desiredModel = MODEL_50;
+            break;
+
+        case MODEL_75:
+            if (T > boilTransition + H && settings.targetTemp >= 93.5)
+                desiredModel = MODEL_Boil;
+            else if (T < 69 - H)
+                desiredModel = MODEL_65;
+            break;
+
+        case MODEL_Boil:
+            if (T < boilTransition - H || settings.targetTemp < 93.5)
+                desiredModel = MODEL_75;
+            break;
+
+        default:
+            break;
+    }
 
     // --------- SWITCH ONLY ON TRANSITION ----------
     if (desiredModel != activeModel) {
 
-        switch (desiredModel) {
+    // =========================================================
+    // 🔥 ENTERING BOIL
+    // =========================================================
+    if (desiredModel == MODEL_Boil)
+    {
+        double Q_current = controller.GetCurrentPower_W();
+
+        boilCtrl.setInputs(T, *ambientTempPtr, settings.boilTemp); 
+        boilCtrl.setInitialPower(Q_current);
+    }
+
+    // =========================================================
+    // 🔧 NORMAL LQG MODELS (50/65/75)
+    // =========================================================
+    else
+    {
+        double u_prev;
+
+        // 👉 if coming FROM boil, use boil output
+        if (activeModel == MODEL_Boil)
+        {
+            u_prev = boilCtrl.GetCurrentPower_W();  
+        }
+        else
+        {
+            u_prev = controller.GetCurrentPower_W();
+        }
+
+        switch (desiredModel)
+        {
             case MODEL_50: controller.loadModel(model50); break;
             case MODEL_65: controller.loadModel(model65); break;
             case MODEL_75: controller.loadModel(model75); break;
+            default: break;
         }
 
-        controller.InitEstimator();
-        controller.Reset(currentHeaterPower_W);  // <-- HÄR
-        activeModel = desiredModel;
+        controller.setControlOutput(u_prev);
     }
+
+    activeModel = desiredModel;
+  }
 }
 
 void updateSettings()
@@ -1479,11 +2093,16 @@ void updateSettings()
   II: Pumpen får aldrig vara igång om det inte finns vatten i bryggverket
   */ 
 
-  bool pumpWater = false;
+  pumpWater = false;
   if(!waterDetected){pumpWater = false;} else {pumpWater = true;}
   if(!settings.power){pumpWater = false;}
 
-    // --- Pump ---
+  // --- Pump ---
+  // Serial.print("settings.pump: ");
+  // Serial.print(settings.pump);
+  // Serial.print("pumpWater: ");
+  // Serial.println(pumpWater ? "YES" : "NO");
+  
   digitalWrite(pumpPin, settings.pump && pumpWater ? HIGH : LOW);
 
   if(settings.power)
@@ -1491,31 +2110,76 @@ void updateSettings()
     digitalWrite(ledOnPin, HIGH);
     digitalWrite(ledWaterDetectedPin, !waterDetected);
 
-    previousPassedTimeS = passedTimeS;
+    bool startMashProgram_ = settings.startMashProgram;
+    bool startHopProgram_ = settings.startHopProgram;
+    bool startWhirlpoolProgram_ = settings.startWhirlpoolProgram;
 
-    bool isAuto = settings.autoModeMash;
-    passedTimeS = isAuto ? (millis() - tS) * 0.001f : 0;
 
-    if (!isAuto) {
+    // Reset tS när ett program startar eller byts
+    bool programChanged = (startMashProgram_ != prevStartMashProgram_) || 
+                      (startHopProgram_ != prevStartHopProgram_) ||
+                      (startWhirlpoolProgram_ != prevStartWhirlpoolProgram_);
+
+    if(programChanged)
+      updateAllItems = true; // Force update of all items when program starts/stops or changes
+
+    if (programChanged || (!startMashProgram_ && !startHopProgram_ && !startWhirlpoolProgram_)) {
       tS = millis();
     }
 
-    settings.targetTemp = !isAuto ? settings.targetTemp :
-    (passedTimeS/60.0 < settings.mashTimes[0]) ? settings.mashTemps[0] :
-    (passedTimeS/60.0 < settings.mashTimes[0] + settings.mashTimes[1]) ? settings.mashTemps[1] :
-    (passedTimeS/60.0 < settings.mashTimes[0] + settings.mashTimes[1] + settings.mashTimes[2]) ? settings.mashTemps[2] :
-    (passedTimeS/60.0 < settings.mashTimes[0] + settings.mashTimes[1] + settings.mashTimes[2] + settings.mashTimes[3]) ? settings.mashTemps[3] :
-    (passedTimeS/60.0 < settings.mashTimes[0] + settings.mashTimes[1] + settings.mashTimes[2] + settings.mashTimes[3] + settings.mashTimes[4]) ? settings.mashTemps[4] :
+    prevStartMashProgram_ = startMashProgram_;
+    prevStartHopProgram_ = startHopProgram_;
+    prevStartWhirlpoolProgram_ = startWhirlpoolProgram_;
+
+    passedTimeS_mashProgram = startMashProgram_ ? (millis() - tS) * 0.001f : 0;
+    passedTimeS_hopProgram = startHopProgram_ ? (millis() - tS) * 0.001f : 0;
+    passedTimeS_whirlpoolProgram = settings.startWhirlpoolProgram ? (millis() - tS) * 0.001f : 0;
+
+    settings.targetTemp = !startMashProgram_ ? settings.targetTemp :
+    (passedTimeS_mashProgram/60.0 < settings.mashTimes[0]) ? settings.mashTemps[0] :
+    (passedTimeS_mashProgram/60.0 < settings.mashTimes[0] + settings.mashTimes[1]) ? settings.mashTemps[1] :
+    (passedTimeS_mashProgram/60.0 < settings.mashTimes[0] + settings.mashTimes[1] + settings.mashTimes[2]) ? settings.mashTemps[2] :
     15.0;
     
-    // Serial.print("PassedTimeS: ");
-    // Serial.println(passedTimeS/60.0);
+    // Serial.print("passedTimeS_mashProgram: ");
+    // Serial.println(passedTimeS_mashProgram/60.0);
+    // Serial.print(", settings.hopTimes[0]: ");
+    // Serial.print(settings.hopTimes[0]);
+    // Serial.print(", settings.hopTimes[1]: ");
+    // Serial.print(settings.hopTimes[1]);
+    // Serial.print(", settings.hopTimes[2]: ");
+    // Serial.print(settings.hopTimes[2]);
+    // Serial.print(", hopsAlarm: ");
+    // Serial.println(hopsAlarm);
 
-         if (!isAuto) {hopsAlarm = false; analogWrite(alarmPin, 0);} 
-    else if (passedTimeS/60.0 >= settings.hopTimes[0] && passedTimeS/60.0 < (settings.hopTimes[0] + settings.alarmTime/60.0)) {hopsAlarm = true; analogWrite(alarmPin, settings.alarmVolume /100.0 * 4095.0);} 
-    else if (passedTimeS/60.0 >= settings.hopTimes[1] && passedTimeS/60.0 < (settings.hopTimes[1] + settings.alarmTime/60.0)) {hopsAlarm = true; analogWrite(alarmPin, settings.alarmVolume /100.0 * 4095.0);} 
-    else if (passedTimeS/60.0 >= settings.hopTimes[2] && passedTimeS/60.0 < (settings.hopTimes[2] + settings.alarmTime/60.0)) {hopsAlarm = true; analogWrite(alarmPin, settings.alarmVolume /100.0 * 4095.0);}
-    else {hopsAlarm = false; analogWrite(alarmPin, 0);}
+    float m = passedTimeS_hopProgram / 60.0f;
+    float d = settings.alarmTime / 60.0f;
+
+    hopsAlarm = false;
+    settings.hopIndex = -1;
+
+    if (startHopProgram_) {
+        for (int i = 0; i < 3; i++) {
+            float t = settings.boilTime - settings.hopTimes[i];
+
+            if (m >= t && m < t + d) {
+                hopsAlarm = true;
+                settings.hopIndex = i + 1;
+                break;
+            }
+        }
+    }
+
+    if (startWhirlpoolProgram_)
+    {
+        if (passedTimeS_whirlpoolProgram / 60.0 < settings.whirlpoolTime)
+            settings.targetTemp = settings.whirlpoolTemp;
+        else
+            settings.targetTemp = 15.0;
+    }
+
+
+    analogWrite(alarmPin, hopsAlarm ? settings.alarmVolume / 100.0f * 4095.0f : 0);
 
     // PID_mashTemp.SetTunings(settings.Kp_mash, settings.Ki_mash, 0, settings.POnE_mash ? P_ON_E : P_ON_M);
     // PID_mashTemp.SetMode(AUTOMATIC);
@@ -1527,9 +2191,10 @@ void updateSettings()
     || settings.k_heatLoss != lastKHeat || settings.deadband1 != lastDeadband1 || settings.deadband2 != lastDeadband2
     || settings.gamma != lastGamma)
     {
-      // mashCtrl.SetTunings(settings.Kp_mash, settings.Ki_mash, settings.k_heatLoss);
-      // mashCtrl.ResetIntegral();
-      // mashCtrl.SetCaptureBands(settings.deadband1, settings.deadband2, settings.gamma);
+      mashCtrl_PI.SetTunings(settings.Kp_mash, settings.Ki_mash, settings.k_heatLoss);
+      mashCtrl_PI.SetCaptureBands(settings.deadband1, settings.deadband2, settings.gamma);
+      double Q0 = settings.k_heatLoss * (current_mashTemp - current_airTemp);
+      mashCtrl_PI.Reset(Q0);
 
       lastKp = settings.Kp_mash;
       lastKi = settings.Ki_mash;
@@ -1542,13 +2207,15 @@ void updateSettings()
       mashCtrlLQG.SetCaptureBands(settings.deadband1, settings.deadband2, settings.gamma);
     }
 
-    if(TopicArrived)
+    static BrewingLocation lastLoc;
+
+    if (settings.brewingLocation != lastLoc)
     {
-      // Serial.print("Message arrived: ");
-      // Serial.println(mqttpayload);
-      //settings.targetTemp = atof(mqttpayload);
-      TopicArrived = false;
+      updateAmbientSource(settings.brewingLocation);
+      lastLoc = settings.brewingLocation;
     }
+
+    handleMQTT();
   }
   else
   {
@@ -1556,9 +2223,22 @@ void updateSettings()
     digitalWrite(ledWaterDetectedPin, 0);
   }
 
+  // updateAllItems = true;
+}
 
+void updateAmbientSource(BrewingLocation loc)
+{
+  double* newPtr;
 
-  updateAllItems = true;
+  if (loc == OutDoor)
+      newPtr = &outdoorTemp;
+  else
+      newPtr = &indoorTemp;
+
+  mashCtrl_PI.SetAmbientTemp(newPtr);
+  mashCtrlLQG.SetAmbientTemp(newPtr);
+  ambientTempPtr = newPtr;
+  updateDisp2();
 }
 
 void updateSensorValues() {
@@ -1569,7 +2249,7 @@ void updateSensorValues() {
     lastReadTime = currentTime;
 
     // PT100 Temperature reading and conversion
-    double rawTemp = PT100.temperature(RNOMINAL, RREF);
+    rawTemp = PT100.temperature(RNOMINAL, RREF);
     // Apply two-point calibration for PT100
     double calibratedTemp = a * rawTemp + b;
     filteredTempPT100 = Filter(calibratedTemp, filteredTempPT100, settings.filter_adc1, 100.0f);
@@ -1582,11 +2262,17 @@ void updateSensorValues() {
 
     waterDetected = !digitalRead(waterDetectedPin);
 
-    // Serial.printf("tempPT100: %.3f C, kLoss_W_per_degC: %.3f, Active Model: %s\n",
-                    
-    //   tempPT100,
-    //   mashCtrlLQG.model_->kLoss_W_per_degC,
-    //   activeModel == MODEL_50 ? "50C" : activeModel == MODEL_65 ? "65C" : "75C");
+  //  Serial.printf(
+  //   "tempPT100: %.3f C, kLoss_W_per_degC: %.3f, Active Model: %s\n",
+  //   tempPT100,
+  //   (activeModel == MODEL_Boil) ? modelBoil.kLoss_W_per_degC
+  //                              : mashCtrlLQG.model_->kLoss_W_per_degC,
+  //   activeModel == MODEL_50  ? "50C"  :
+  //   activeModel == MODEL_65  ? "65C"  :
+  //   activeModel == MODEL_75  ? "75C"  :
+  //   activeModel == MODEL_Boil ? "BOIL" :
+  //                               "UNKNOWN"
+  //   );
 
     // Serial.print("Voltage adc1: ");
     // Serial.print(adc1_raw_volt, 4);
@@ -1598,6 +2284,9 @@ void updateSensorValues() {
 
     // Serial.print(", Water Detected: ");
     // Serial.print(waterDetected ? "YES" : "NO");
+    
+    // Serial.print(", pumpWater: ");
+    // Serial.println(pumpWater ? "YES" : "NO");
     
     // Serial.print(", Filtered ADC1: ");
     // Serial.print(filteredAdc1_volt, 4); 
@@ -1627,16 +2316,18 @@ void updateSensorValues() {
 
 void updateDisp2()
 {
+  #define DUTY_TO_PERCENT 0.02442002442f
   display2.clearBuffer();
-  if(menuItemPrintableDisp2(1,1)){display2.print(F("TargetTemp:      "));}
-  if(menuItemPrintableDisp2(1,2)){display2.print(F("MashTemp:        "));}
-  if(menuItemPrintableDisp2(1,3)){display2.print(F("DC:              "));}
-  if(menuItemPrintableDisp2(1,4)){display2.print(F("AirTemp:         "));}
+  display2.setCursor(DISP2_CHAR_X * 1,  DISP2_CHAR_Y * 1); display2.print(F("TargetTemp:"));
+  display2.setCursor(DISP2_CHAR_X * 1,  DISP2_CHAR_Y * 2); display2.print(F("MashTemp:  "));
+  display2.setCursor(DISP2_CHAR_X * 1,  DISP2_CHAR_Y * 3); display2.print(F("DC:        "));
+  display2.setCursor(DISP2_CHAR_X * 1,  DISP2_CHAR_Y * 4); display2.print(F("AirTemp:   "));
 
-  if(menuItemPrintableDisp2(13,1)){printInt32_tAtWidthDisplay2(settings.targetTemp, 3, 'C');}
-  if(menuItemPrintableDisp2(13,2)){printDoubleAtWidthDisplay2(current_mashTemp, 3, 'C');}
-  if(menuItemPrintableDisp2(13,3)){printDoubleAtWidthDisplay2(DutyCycle/4095.0 * 100.0, 3, '%');}
-  if(menuItemPrintableDisp2(13,4)){printInt32_tAtWidthDisplay2(current_airTemp, 3, 'C');}
+  display2.setCursor(DISP2_CHAR_X * 13, DISP2_CHAR_Y * 1); printInt32_tAtWidthDisplay2(settings.targetTemp, 3, 'C');
+  display2.setCursor(DISP2_CHAR_X * 13, DISP2_CHAR_Y * 2); printDoubleAtWidthDisplay2(current_mashTemp, 3, 'C');
+  display2.setCursor(DISP2_CHAR_X * 6, DISP2_CHAR_Y * 3); printDoubleAtWidthDisplay2(DutyCycle * DUTY_TO_PERCENT, 3, '%');
+  display2.setCursor(DISP2_CHAR_X * 13, DISP2_CHAR_Y * 3); printDoubleAtWidthDisplay2(DutyCycle * PWM_to_W, 3, 'W');
+  display2.setCursor(DISP2_CHAR_X * 13, DISP2_CHAR_Y * 4); printDoubleAtWidthDisplay2(*ambientTempPtr, 3, 'C');
   display2.sendBuffer();
   display2.clearBuffer();
 }
@@ -1693,6 +2384,7 @@ void setupMQTT() // Home Assistant
         ))
     {
       Serial.println("connected");
+      subscribeMQTT();
       publishWifiMqttStatus();
     }
     else
@@ -1760,6 +2452,8 @@ void reconnectMQTT() //Homeassistant
         ))
     {
       Serial.println("MQTT connected!");
+      
+      subscribeMQTT();
       publishWifiMqttStatus();
     }
   }
@@ -1794,15 +2488,51 @@ void publishWifiMqttStatus()
   }
 }
 
+void handleMQTT()
+{
+  if (TopicArrived)
+  {
+    TopicArrived = false;
+
+    if (mqtttopic == "home/weather/outdoorTemp")
+    {
+      outdoorTemp = atof(mqttpayload);
+      // Serial.print("Received outdoorTemp: ");
+      // Serial.println(outdoorTemp);
+    }
+    else if (mqtttopic == "home/datalogger/airTemp")
+    {
+      indoorTemp = atof(mqttpayload);
+
+      // Serial.print("Received indoorTemp: ");
+      // Serial.println(indoorTemp);
+    }
+  }
+}
+
+const char* modelIDToString(ModelID id)
+{
+    switch (id)
+    {
+        case MODEL_50:   return "MODEL_50";
+        case MODEL_65:   return "MODEL_65";
+        case MODEL_75:   return "MODEL_75";
+        case MODEL_Boil: return "MODEL_Boil";
+        default:         return "UNKNOWN";
+    }
+}
+
 void publishMessage() //Home Assistant only
 {
   StaticJsonDocument<512> doc;
 
   // --- Core readings ---
   doc["mashTempPT100"] = roundTo(current_mashTemp, 3);  // 3 decimal
-  doc["airTemp"]       = roundTo(current_airTemp, 2);   // 2 decimal
-  doc["timePassed"]    = roundTo(passedTimeS / 60.0f, 1);
-
+  doc["airTemp"]       = roundTo(*ambientTempPtr, 2);   // 2 decimal
+  doc["timePassed"] = roundTo(
+      (settings.startMashProgram ? passedTimeS_mashProgram :
+      settings.startHopProgram  ? passedTimeS_hopProgram  :
+                                  0.0f) / 60.0f,1);
   // --- Setpoint ---
   doc["targetTemp"]    = settings.targetTemp;
 
@@ -1811,14 +2541,17 @@ void publishMessage() //Home Assistant only
   doc["powerIn"]       = roundTo(DutyCycle * PWM_to_W, 1); // integer watts
 
   // --- Boolean states (REAL booleans) ---
-  doc["pumpOn"]        = settings.pump;
+  doc["pumpOn"]        = (settings.pump && pumpWater);
   doc["hopsAlarm"]     = hopsAlarm;
   doc["waterDetected"] = waterDetected;
 
-  // --- PID parameters ---
+  doc["hopIndex"] = settings.hopIndex; // e.g. "hop1": true
+
+  // --- PI parameters ---
   doc["kp"]            = roundTo(settings.Kp_mash, 1);
   doc["ki"]            = roundTo(settings.Ki_mash, 3);
   doc["heatLoss"]      = roundTo(settings.k_heatLoss, 1); //change to: model->kLoss_W_per_degC
+  doc["activeModel"]   = modelIDToString(activeModel);
 
   // --- Filters (rounded for readability) ---
   doc["filterTemp"]    = roundTo(settings.filter_adc1, 2);
@@ -1830,12 +2563,21 @@ void publishMessage() //Home Assistant only
   client.publish("mashTun/state", buffer, n);
 
   //InfluxDB
-  if (!writeInflux(current_mashTemp, DutyCycle * PWM_to_W, current_airTemp)) {
+  if (!writeInflux(current_mashTemp, DutyCycle * PWM_to_W, *ambientTempPtr)) {
   Serial.println("Influx write failed");
   }
 }
 
-bool writeInflux(float mashTemp, float powerW, float current_airTemp) //Only InfluxDB
+void subscribeMQTT() //Home Assistant only
+{
+  if (client.connected())
+  {
+    client.subscribe("home/weather/outdoorTemp");
+    client.subscribe("home/datalogger/airTemp");
+  }
+}
+
+bool writeInflux(float mashTemp, float powerW, double ambientTemp) //Only InfluxDB
 {
   if (WiFi.status() != WL_CONNECTED)
     return false;
@@ -1849,7 +2591,7 @@ bool writeInflux(float mashTemp, float powerW, float current_airTemp) //Only Inf
     "mashtun,source=esp32 "
     "mashtemp=" + String(mashTemp, 3) +
     ",power="   + String(powerW, 1) +
-    ",airtemp=" + String(current_airTemp, 2) +
+    ",airtemp=" + String(ambientTemp, 2) +
     ",targettemp=" + String(settings.targetTemp, 1) +
     " " + String((uint64_t)time(nullptr) * 1000000000ULL) + "\n";
 
@@ -1866,7 +2608,7 @@ void setupTime() {
 
   time_t now;
   while ((now = time(nullptr)) < 100000) {
-    delay(500);
+    delay(100);
   }
 }
 
@@ -1878,6 +2620,7 @@ void callback(char* topic, byte* payload, unsigned int length) //Homeassistant
     mqtttopic = ""; //clear topic string buffer
     mqtttopic = topic; //store new topic
     memcpy( mqttpayload, payload, length );
+    mqttpayload[length] = '\0';                // <-- CRITICAL FIX
     TopicArrived = true;
   }
 }

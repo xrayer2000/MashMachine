@@ -15,8 +15,6 @@
 
 #define LATCHSTATE 3
 
-
-
 class RotaryEncoderAccel
 {
 public:
