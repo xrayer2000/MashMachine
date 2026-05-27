@@ -27,12 +27,6 @@
 #include <HTTPClient.h>      //InfluxDB
 #include <time.h> //time for InfluxDB
 
-
-//-----------------------------------------------------------------------
-//Model och enums
-enum ModelID { MODEL_50, MODEL_65, MODEL_75, MODEL_Boil };
-//-----------------------------------------------------------------------
-
 // Hop icon, 48x48px
 static const unsigned char hop_logo[] PROGMEM = {
   0x00, 0x00, 0x00, 0xC0, 0xCC, 0x00, 0x00, 0x00, 0x00, 0x70, 0xEF, 0x01, 0x00, 0x00, 0x20, 0x78,
@@ -218,9 +212,9 @@ struct Mysettings{
   double Kp_mash = 32.0;
   double Ki_mash = 0.00;
   double k_heatLoss = 4.9; //65C
-  double deadband1 = 8;
-  double deadband2 = 1.0;
-  double gamma = 0.35;
+  double deadband1 = 4.0;
+  double deadband2 = 0.5;
+  double gamma = 0.9;
   double targetTemp = 25;
 
   SystemMode systemMode = MODE_CONTROL_LQG;
@@ -260,8 +254,8 @@ struct Mysettings{
   boolean pump = false;
   int16_t maxMashTemp = 100; //220
 
-  double filter_adc1 = 0.95f;
-  double filterDC = 0.95f;
+  double filter_adc1 = 0.00f;
+  double filterDC = 0.30f;
 
   int16_t alarmVolume = 4;
   int16_t alarmTime = 3;
@@ -375,6 +369,39 @@ uint32_t loopTime  = 0;
 uint32_t sumLoopTime = 0;
 uint32_t loopCount = 0;
 uint32_t avgLoopTime = 0;
+
+// ============================================================
+// Forward declarations
+// ============================================================
+
+float roundTo(float value, int decimals);
+
+double Filter(double input,double previous,double alpha,double maxValue);
+
+void setupWiFi();
+void setupMQTT();
+void setupTime();
+
+void reconnectWiFi();
+void reconnectMQTT();
+
+void handleMQTT();
+
+void subscribeMQTT();
+void publishWifiMqttStatus();
+void publishMessage();
+
+void updateSettings();
+void updateSensorValues();
+void updateDisp2();
+
+void updateModelForCurrentTemp(LQGController& controller,double T,ModelID& activeModel);
+bool writeInflux(float mashTemp,float powerW,double ambientTemp);
+void callback(char* topic,byte* payload,unsigned int length);
+void FlashPointer();
+void printStringAtWidth(const char* str,uint8_t width);
+void incrementDecrementInt(int16_t* value,int16_t amount,int16_t minVal, int16_t maxVal);
+void incrementDecrementDouble(double* value,double amount,double minVal,double maxVal);
 
 
 void setup() {//=================================================SETUP=======================================================
@@ -534,7 +561,7 @@ void setup() {//=================================================SETUP==========
   // 4. Reset med rätt initialvärde
   mashCtrlLQG.Init(currentHeaterPower_W); // 5. bumpless start
 
-  settings.pump = false;
+  // settings.pump = false;
 
 
 }
@@ -542,7 +569,6 @@ void setup() {//=================================================SETUP==========
 void loop() { //=================================================LOOP=======================================================
 
 
-  Serial.print("Raw temperature: "); Serial.println(rawTemp);
   // loop time measurement
   // ---------------------------------------------------------
   now = micros();
@@ -2080,9 +2106,11 @@ void updateModelForCurrentTemp(LQGController& controller, double T, ModelID& act
         }
 
         controller.setControlOutput(u_prev);
+        controller.resetIntegrator();  // ← add this
     }
 
     activeModel = desiredModel;
+    mashCtrlLQG.SetActiveModel(activeModel);
   }
 }
 
@@ -2494,7 +2522,7 @@ void handleMQTT()
   {
     TopicArrived = false;
 
-    if (mqtttopic == "home/weather/outdoorTemp")
+    if (mqtttopic == "home/weather/outdoorTemp_plus1h")
     {
       outdoorTemp = atof(mqttpayload);
       // Serial.print("Received outdoorTemp: ");
@@ -2524,7 +2552,11 @@ const char* modelIDToString(ModelID id)
 
 void publishMessage() //Home Assistant only
 {
-  StaticJsonDocument<512> doc;
+  StaticJsonDocument<1024> doc;
+
+  // --- LQGI Model debug  ---
+  // doc["activeModel"]   = modelIDToString(activeModel);
+  doc["lqgDebug"] = mashCtrlLQG.GetDebugString();
 
   // --- Core readings ---
   doc["mashTempPT100"] = roundTo(current_mashTemp, 3);  // 3 decimal
@@ -2551,14 +2583,13 @@ void publishMessage() //Home Assistant only
   doc["kp"]            = roundTo(settings.Kp_mash, 1);
   doc["ki"]            = roundTo(settings.Ki_mash, 3);
   doc["heatLoss"]      = roundTo(settings.k_heatLoss, 1); //change to: model->kLoss_W_per_degC
-  doc["activeModel"]   = modelIDToString(activeModel);
 
   // --- Filters (rounded for readability) ---
   doc["filterTemp"]    = roundTo(settings.filter_adc1, 2);
   doc["filterDC"]      = roundTo(settings.filterDC, 2);
 
   // --- Serialize and publish ---
-  char buffer[512];
+  char buffer[1024];
   size_t n = serializeJson(doc, buffer);
   client.publish("mashTun/state", buffer, n);
 
@@ -2572,7 +2603,8 @@ void subscribeMQTT() //Home Assistant only
 {
   if (client.connected())
   {
-    client.subscribe("home/weather/outdoorTemp");
+    // client.subscribe("home/weather/outdoorTemp");
+    client.subscribe("home/weather/outdoorTemp_plus1h");
     client.subscribe("home/datalogger/airTemp");
   }
 }

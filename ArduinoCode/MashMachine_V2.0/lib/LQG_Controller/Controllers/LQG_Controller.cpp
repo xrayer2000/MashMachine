@@ -16,7 +16,7 @@ LQGController::LQGController(double* input,
     Qmax_W_ = heaterRatedPower_W;
     dQmax_W_ = 100.0;
 
-    band1_ = 8.0; // °C 
+    band1_ = 4.5; // °C 
     band2_ = 1.0;  // °C 
     gamma_ = 0.35;
     
@@ -69,9 +69,32 @@ void LQGController::SetAmbientTemp(double* ambient)
 
 void LQGController::InitEstimator()
 {
-    xhat_[0] = 0.0;
-    xhat_[1] = *T_;   // Initialize temperature state to current measured temperature
-    xhat_[2] = 0.0;   // integrator starts at zero
+    xhat_[0] = *T_;   // temperature state
+    xhat_[1] = 0.0;   // hidden dynamic state
+    xI_      = 0.0;   // integrator
+}
+
+void LQGController::resetIntegrator()
+{
+    // Current temperature deviation from setpoint (in estimator coordinates)
+    const double Ttilde = xhat_[0] - *Tset_;
+
+    // Solve for xI such that u_lqgi = 0 at the moment of reset.
+    //
+    // The control law is:
+    //   u = -(Le[0]*Ttilde + Le[1]*x2 + Le[2]*xI)
+    //
+    // Setting u = 0 and solving for xI:
+    //   Le[2]*xI = -(Le[0]*Ttilde + Le[1]*x2)
+    //   xI = -(Le[0]*Ttilde + Le[1]*x2) / Le[2]
+    //
+    // This means the integrator starts neutral — it contributes 0 to u,
+    // so Qcmd = Qff at the first timestep after reset.
+    // The integrator then accumulates error organically under the new model.
+    xI_ = (-model_->Le[0] * Ttilde - model_->Le[1] * xhat_[1]) / model_->Le[2];
+
+    // Clamp to prevent extreme values if Le[2] is very small (division amplification)
+    xI_ = Clamp(xI_, -XI_MAX, XI_MAX);
 }
 
 double LQGController::GetCurrentPower_W() const {
@@ -88,9 +111,24 @@ void LQGController::setControlOutput(double Q_W)
         *U_ = Clamp(Q_prev_W_ * W_to_PWM, 0.0, PWM_MAX);
 }
 
-// ============================================================
-// MAIN CONTROLLER (LQGI)
-// ============================================================
+String LQGController::GetDebugString() const {
+    const double Ttilde_Le1 = -model_->Le[0] * dbg_Ttilde_;
+    const double x2_Le2 = -model_->Le[1] * xhat_[1];
+    const double xI_Le3 = -model_->Le[2] * xI_;
+
+    char buf[256];
+
+    snprintf(buf, sizeof(buf), 
+    "[%-5s][%-8s] T=%6.3f Tair=%4.1f Tset=%2.0f err=%5.2f | x1=%6.3f x2=%8.3f xI=%7.1f inn=%9.5f |"
+    " Qff=%6.1f u=%6.1f Q=%6.1f | Ttilde_Le1=%6.2f x2_Le2=%6.1f xI_Le3=%6.1f",
+        phase_str_, modelIDToString(activeModel_), dbg_T_, dbg_Tair_, dbg_r_, dbg_error_,
+        xhat_[0], xhat_[1], xI_, dbg_innov_,
+        dbg_Qff_, dbg_u_lqgi_, dbg_Qsat_,
+        Ttilde_Le1, x2_Le2, xI_Le3
+    );
+
+    return String(buf);
+}
 
 bool LQGController::Compute()
 {
@@ -98,146 +136,129 @@ bool LQGController::Compute()
     if (now - lastTime_ms_ < 1000) return false;
     lastTime_ms_ = now;
 
-    const double T    = *T_;
-    const double r    = *Tset_;
-    const double Tair = *Tair_;
-    const double error = r - T;
-    double r_eff = r;
-    double u_raw = 0.0;
-    bool lqgi_saturated = false;
+    // =========================================================
+    // Measurements
+    // =========================================================
+    const double T     = *T_;
+    const double r     = *Tset_;
+    const double Tair  = *Tair_;
+    const double error = r - xhat_[0]; // Kalman smoothed error
 
     // =========================================================
-    // Feedforward (physics only)
+    // Feedforward
     // =========================================================
-    double Qff = model_->kLoss_W_per_degC * (T - Tair);
+    const double Qff = model_->kLoss_W_per_degC * (r - Tair);
 
     // =========================================================
-    // Kalman predict xhat_next = (A_aug x + B_aug u + E_aug r)
+    // Kalman predict
     // =========================================================
-    double xpred[Ne] = {0.0};
-    for (int i = 0; i < Ne; i++) {
-        for (int j = 0; j < Ne; j++)
-        {
-            xpred[i] += model_->Ae[i][j] * xhat_[j];
-        }
-        xpred[i] += model_->Be[i] * Q_prev_W_;
-        if (!lqgi_saturated_prev_) {
-            xpred[i] += model_->Ee[i] * r_eff;  
-        }
-    }
+    double xpred[2] = {0.0};
+    MatVec(model_->Ae, xhat_, xpred, 2, 2);
+    for (int i = 0; i < 2; i++)
+        xpred[i] += model_->Be[i] * Q_prev_W_ + model_->Ee[i] * Tair;
 
     // =========================================================
-    // Innovation
+    // Kalman update
     // =========================================================
-    const double yhat  = Dot(model_->Ce, xpred, Ne);
-    const double innov = T - yhat;
-
-    // =========================================================
-    // Kalman update (K_aug) - ALWAYS applied to correct estimates
-    // =========================================================
-    for (int i = 0; i < Ne; i++)
+    const double innov = T - xpred[0];
+    for (int i = 0; i < 2; i++)
         xhat_[i] = xpred[i] + model_->Ke[i] * innov;
 
-    double u_lqgi = 0.0;
-    double Qcmd   = Qff;
-    double u_Kr   = 0.0;
-    double Kr_  = 0.0;
-
-    Kr_ = 5 * model_->kLoss_W_per_degC;
-    u_Kr = Kr_ * error;
+    // =========================================================
+    // Observer outputs — always computed, every phase
+    // =========================================================
+    const double Ttilde = xhat_[0] - r;
+    const double u_Kr   = 0.0;  // reserved: Kr_ * error
+    const double xe[3]  = { Ttilde, xhat_[1], xI_ };
+    const double u_lqgi = -Dot(model_->Le, xe, 3);
 
     // =========================================================
-    // PHASE LOGIC 
+    // Phase selection
     // =========================================================
-    u_lqgi = 0;
-    // ---------- PHASE 1: BANG ----------
-    if (error > band1_) {
-        // Serial.printf("LQG: PHASE 1 BANG:\t");
-        Qcmd = Qmax_W_;
+    double Qcmd = Qff;
+
+    // ---------------------------------------------------------
+    // PHASE 1 : BANG
+    // ---------------------------------------------------------
+    if (error > band1_)
+    {
+        Qcmd       = Qmax_W_;
+        in_phase3_ = false;
     }
-    // ---------- PHASE 2: SLOPE ----------
-    else if (error > band2_) {
-        // Serial.printf("LQG: PHASE 2 SLOPE:\t");
 
-        double deltaY = Qmax_W_ - Qff - u_lqgi - u_Kr;
+    // ---------------------------------------------------------
+    // PHASE 2 : SLOPE
+    // ---------------------------------------------------------
+    else if (error > band2_)
+    {
+        // Clamp u_lqgi influence in slope to prevent diverged x2 from warping the curve, causeing big quantization on the Qcmd output.
+        const double u_slope = Clamp(u_lqgi, -Qff, Qff);
+
+        double deltaY = Qmax_W_ - Qff - u_slope - u_Kr;
         double deltaX = band1_ - band2_;
         double t = (band1_ - error) / deltaX;
         t = Clamp(t, 0.0, 1.0);
         double s = pow(t, gamma_);
         Qcmd = Qmax_W_ - deltaY * s;
-
-        // Serial.printf("t = %.3f | ", t);
-        // Serial.printf("deltaY * s = %.3f | ", deltaY * s);
-
-        Qcmd = Clamp(Qcmd, Qff + u_lqgi + u_Kr, Qmax_W_);
+        Qcmd = Clamp(Qcmd, Qff + u_slope + u_Kr, Qmax_W_);
+        in_phase3_ = false;
     }
-    // ---------- PHASE 3: REGULATE (LQGI) ----------
-    else {
-        // Serial.printf("LQG: PHASE 3 REGULATE:\t");
 
-        // =========================================================
-        // LQR - Control law
-        // =========================================================
-        u_raw = 0.0;
-        for (int i = 1; i < Ne; i++) // endast LQR på temp och integrator
+    // ---------------------------------------------------------
+    // PHASE 3 : LQGI
+    // ---------------------------------------------------------
+    else
+    {
+        // Bumpless transfer from Phase 1/2
+        if (!in_phase3_)
         {
-            if (i == 1) {
-                // reglera på temperaturavvikelse
-                const double Ttilde = xhat_[1] - r;
-                u_raw -= model_->Le[i] * Ttilde;
-                // Serial.printf("Le[%d]=%.3f Ttilde=%.3f | ", i, model_->Le[i], Ttilde);
-            } 
-            else 
-            {
-                u_raw -= model_->Le[i] * xhat_[i];
-                // Serial.printf("Le[%d]=%.3f xhat=%.3f | ", i, model_->Le[i], xhat_[i]);
-            }
+            const double u_target = Q_prev_W_ - Qff - u_Kr;
+            xI_ = (-u_target - model_->Le[0] * Ttilde - model_->Le[1] * xhat_[1]) / model_->Le[2];
+            in_phase3_ = true;
         }
-        // Serial.printf("u_raw=%.3f | ", u_raw);
 
-        // tona ner LQR nära börvärdet
-        double gL = fabs(error) / 0.3;        // full LQR utanför ±0.3 °C
-        if (gL > 1.0) gL = 1.0;
-        u_raw *= gL;
-
-        // heater-only constraint
-        u_lqgi = max(u_raw, 0.0);
-        lqgi_saturated = (u_raw < 0.0);
-       
+        // Integrator update with anti-windup
+        const bool saturated_low  = (Q_prev_W_ <= Qmin_W_);
+        const bool saturated_high = (Q_prev_W_ >= Qmax_W_);
+        if (!(saturated_low  && (r - T) < 0) &&
+            !(saturated_high && (r - T) > 0))
+        {
+            xI_ = model_->alpha * xI_ + (r - T);
+        }
+        xI_ = Clamp(xI_, -XI_MAX, XI_MAX);
 
         Qcmd = Qff + u_lqgi + u_Kr;
     }
 
     // =========================================================
-    // Saturation & output
+    // Actuator saturation
     // =========================================================
-    SATURATE_AND_OUTPUT:
-    double Qraw = Qcmd;
-    double Qsat = Clamp(Qraw, Qmin_W_, Qmax_W_);
-
+    const double Qsat = Clamp(Qcmd, Qmin_W_, Qmax_W_);
     Q_prev_W_ = Qsat;
-    //*U_ = Clamp(Qsat * W_to_PWM, 0.0, PWM_MAX);
-
-    lqgi_saturated_prev_ = lqgi_saturated;
 
     // =========================================================
-    // Logging
+    // Debug
     // =========================================================
+    const double Tterm  = -model_->Le[0] * Ttilde;
+    const double X2term = -model_->Le[1] * xhat_[1];
+    const double Iterm  = -model_->Le[2] * xI_;
 
-    // Serial.printf(
-    //     "T=%.2f Tset=%.2f Error=%.2f | "
-    //     "yhat=%.2f innov=%.3f | "
-    //     "xI=%.3f | "
-    //     "Qff=%.1f u=%.1f u_Kr=%.1f Q=%.1f\n",
-    //     T, r, error,
-    //     yhat, innov,
-    //     xhat_[Ne-1],
-    //     Qff, u_lqgi, u_Kr, Qsat
-    // );
+    strncpy(phase_str_,
+            (error > band1_) ? "BANG" : (error > band2_) ? "SLOPE" : "LQGI",
+            sizeof(phase_str_));
+
+    dbg_T_      = T;
+    dbg_Tair_   = Tair;
+    dbg_r_      = r;
+    dbg_error_  = error;
+    dbg_innov_  = innov;
+    dbg_Qff_    = Qff;
+    dbg_u_lqgi_ = u_lqgi;
+    dbg_Qsat_   = Qsat;
+    dbg_Ttilde_ = Ttilde;
 
     return true;
 }
-
 
 // ============================================================
 // HELPERS
@@ -255,4 +276,28 @@ double LQGController::Dot(const double* a, const double* b, int n)
     double s = 0.0;
     for (int i = 0; i < n; i++) s += a[i] * b[i];
     return s;
+}
+
+void LQGController::MatVec(const double (*A)[LQGModel::Ne], const double* x, double* out, int rows, int cols)
+{
+    for (int i = 0; i < rows; i++)
+    {
+        out[i] = 0.0;
+        for (int j = 0; j < cols; j++)
+        {
+            out[i] += A[i][j] * x[j];
+        }
+    }
+}
+
+const char* LQGController::modelIDToString(ModelID id) const
+{
+    switch (id)
+    {
+        case MODEL_50:   return "MODEL_50";
+        case MODEL_65:   return "MODEL_65";
+        case MODEL_75:   return "MODEL_75";
+        case MODEL_Boil: return "MODEL_Boil";
+        default:         return "UNKNOWN";
+    }
 }

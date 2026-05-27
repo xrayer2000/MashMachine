@@ -613,15 +613,15 @@ void page_MENU_CONTROL_MODE_PI(){//=============================================
     {
       switch(i)
       {
-        case 1: display1.print(F("Setpoint           ")); break;
-        case 2: display1.print(F("Kp                 ")); break;
-        case 3: display1.print(F("Ki                 ")); break;
-        case 4: display1.print(F("k_heat             ")); break;
-        case 5: display1.print(F("Band 1             ")); break;
-        case 6: display1.print(F("Band 2             ")); break;
-        case 7: display1.print(F("Gamma              ")); break;
+        case 1: display1.print(F("Setpoint ")); break;
+        case 2: display1.print(F("Kp       ")); break;
+        case 3: display1.print(F("Ki       ")); break;
+        case 4: display1.print(F("k_heat   ")); break;
+        case 5: display1.print(F("Band 1   ")); break;
+        case 6: display1.print(F("Band 2   ")); break;
+        case 7: display1.print(F("Gamma    ")); break;
         case 8: display1.drawHLine(5, display1.getCursorY(), 120); break;
-        case 9: display1.print(F("Back                ")); break;
+        case 9: display1.print(F("Back     ")); break;
       }
     }
     if(menuItemPrintable(10, i))
@@ -681,16 +681,16 @@ void page_MENU_MISC(){//=================================================MISC===
     {
       switch(i)
       {
-        case 1: display1.print(F("Power             ")); break;  
-        case 2: display1.print(F("Filter Temp       ")); break;
-        case 3: display1.print(F("Filter DC         ")); break;
-        case 4: display1.print(F("Max Temp          ")); break;
-        case 5: display1.print(F("Disable disp      ")); break;
-        case 6: display1.print(F("Alarm Volume      ")); break;
-        case 7: display1.print(F("Alarm Time        ")); break;
-        case 8: display1.print(F("Location          ")); break;
-        case 9: display1.drawHLine(5, display1.getCursorY(), 120); break;
-        case 10: display1.print(F("Back              ")); break;
+        case 1:  display1.print(F("Power        ")); break;  
+        case 2:  display1.print(F("Filter Temp  ")); break;
+        case 3:  display1.print(F("Filter DC    ")); break;
+        case 4:  display1.print(F("Max Temp     ")); break;
+        case 5:  display1.print(F("Disable disp ")); break;
+        case 6:  display1.print(F("Alarm Volume ")); break;
+        case 7:  display1.print(F("Alarm Time   ")); break;
+        case 8:  display1.print(F("Location     ")); break;
+        case 9:  display1.drawHLine(5, display1.getCursorY(), 120); break;
+        case 10: display1.print(F("Back         ")); break;
       }
     }
     if(menuItemPrintable(12, i))
@@ -704,7 +704,7 @@ void page_MENU_MISC(){//=================================================MISC===
         case 5: printInt32_tAtWidth(settings.timeBeforeDisable, 3, "m"); break;
         case 6: printInt32_tAtWidth(settings.alarmVolume, 3, "%"); break;
         case 7: printInt32_tAtWidth(settings.alarmTime, 3, "s"); break;
-        case 9: printStringAtWidth(brewingLocationToString(settings.brewingLocation), 4); break;
+        case 8: printStringAtWidth(brewingLocationToString(settings.brewingLocation), 3); break;
       }
     }
   }
