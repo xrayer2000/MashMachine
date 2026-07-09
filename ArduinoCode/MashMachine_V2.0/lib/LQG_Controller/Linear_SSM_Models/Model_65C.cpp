@@ -5,7 +5,7 @@
 // Ne = 2 states + 1 integrator
 // =====================
 
-static const double kLoss_W_per_degC = 4.5;
+static const double kLoss_W_per_degC = 4.6; //4.5
 const double Model_65C::alpha_ = 0.99;
 
 const double Model_65C::Ae_[Ne][Ne] = {

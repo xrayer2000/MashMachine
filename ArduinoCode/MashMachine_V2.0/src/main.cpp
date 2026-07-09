@@ -23,7 +23,7 @@
 #include <math.h> //math
 #include <Adafruit_MAX31865.h> //temperatur
 #include <OneWire.h> //temperatur
-#include <DallasTemperature.h> //temperatur
+#include <DallasTemperature.h> //temperatur DS18B20 for oled temp
 #include <HTTPClient.h>      //InfluxDB
 #include <time.h> //time for InfluxDB
 
@@ -64,12 +64,13 @@ static const unsigned char hop_logo[] PROGMEM = {
 #define MAX31865_SO 19 //MAX31865 serial out
 #define MAX31865_SCK 18 //MAX31865 serial clock
 #define MAX31865_SI 23 //MAX31865 serial in
+//Dallas Temperature - DS18B20
+#define ONE_WIRE_BUS 16// 16 //ESP32 - OneWire bus
 //Pump
 #define pumpPin 27 //ESP32 - Pump
 //Larm
 #define alarmPin 13//13 // ESP32 - alarm
-//
-#define ONE_WIRE_BUS 16// 16 //ESP32 - OneWire bus
+
 //Water indicator
 //#define waterDetectedPin adc2 ads1115
 #define waterDetectedPin 34
@@ -160,6 +161,7 @@ enum pageType{
   MENU_MISC,
   MENU_BREWING_LOCATION,
   MENU_MASH_PROGRAM,
+  MENU_LAUTERING_PROGRAM,
   MENU_HOPS_PROGRAM,
   MENU_WHIRLPOOL_PROGRAM
 };
@@ -177,6 +179,7 @@ void page_MENU_MANUAL_MODE();
 void page_MENU_MISC();
 void page_MENU_BREWING_LOCATION();
 void page_MENU_MASH_PROGRAM();
+void page_MENU_LAUTERING_PROGRAM();
 void page_MENU_HOPS_PROGRAM();
 void page_MENU_WHIRLPOOL_PROGRAM();
 //-----------------------------------------------------------------------
@@ -197,6 +200,7 @@ boolean flashIsOn;
 void initMenuPage(String title, uint8_t itemCount);
 void incrementDecrementFloat(float *v, float amount, float min, float max);
 void incrementDecrementDouble(double *v, double amount, double min, double max);
+void renderCurrentPage();
 void doPointerNavigation();
 bool menuItemPrintable(uint8_t xPos, uint8_t yPos);
 //-----------------------------------------------------------------------
@@ -234,11 +238,15 @@ struct Mysettings{
   BrewingLocation brewingLocation = OutDoor;
 
   boolean startMashProgram = 0;
+  boolean startLauteringProgram = 0;
   boolean startHopProgram = 0;
   boolean startWhirlpoolProgram = 0;
 
   int16_t mashTemps[3] = {66,76,78};
   int16_t mashTimes[3] = {60,15,15};
+
+  int16_t lauteringTemp = 76;
+  int16_t lauteringTime = 30;
   
   int16_t hopTimes[3] = {60, 15, 1};
   int16_t boilTime = 60;
@@ -268,7 +276,12 @@ Mysettings oldSettings;
 void sets_SetDeafault();
 void sets_Load();
 void sets_Save();
+bool pendingMashStart = false;
+bool pendingLauterStart = false;
+bool pendingHopStart = false;
+bool pendingWhirlpoolStart = false;
 bool prevStartMashProgram_ = false;
+bool prevStartLauteringProgram_ = false;
 bool prevStartHopProgram_ = false;
 bool prevStartWhirlpoolProgram_ = false;
 //-----------------------------------------------------------------------
@@ -277,11 +290,20 @@ unsigned long previousTime = 0;
 unsigned long currentTime;
 double tS;
 long passedTimeS_mashProgram = 0;
+long passedTimeS_lauteringProgram = 0;
 long passedTimeS_hopProgram = 0;
 long passedTimeS_whirlpoolProgram = 0;
+// Mash step state
+int8_t currentMashStep = 0;
+bool mashStepAtTemp = false;
+unsigned long mashStepTimerStartMs = 0;
+unsigned long mashCompletedTimeMs = 0;
+
 unsigned long previousSensorRead = 0;
 const unsigned long saveInterval = 60000; // 60 000 ms = 60 sekunder
 unsigned long lastEditTime = 0;
+//Oled temperature sensor DS18B20
+double current_oledTemp = 0;
 //-----------------------------------------------------------------------
 //CONTROLLER
 double Output_mashTemp;
@@ -329,38 +351,47 @@ double passedTime, previousPassedTime1, previousPassedTime2 = 0;
 bool initPage = true;
 bool changeValues [20];
 //-----------------------------------------------------------------------
-//MAX31865 PT100 - Mash temperature
-  Adafruit_MAX31865 PT100(MAX31865_CS, MAX31865_SI, MAX31865_SO, MAX31865_SCK);
-  double tempPT100 = 0;
-  double filteredTempPT100 = 0;
-  unsigned long lastReadTime = 0;
-  const unsigned long readInterval = 1000;  // ms
-  // ====== CONFIG ======
-  #define RREF      435.8
-  #define RNOMINAL  100.0
-  // ---- Replace these with your measured values ----
-  double const CAL_T1  = 7.1;     // Real temperature point 1 (ice bath)
-  double const CAL_T2  = 100.0;   // Real temperature point 2 (boiling water)
-
-  double const CAL_M1  = 7.5;     // Measured temperature at T1
-  double const CAL_M2  = 95.3;   // Measured temperature at T2
-  // ================================================
-  // Calibration coefficients (computed automatically)5
-  double a;
-  double b;
-
-//-----------------------------------------------------------------------
 //Dallas Temperature - Air temperature
   OneWire oneWire(ONE_WIRE_BUS);
   DallasTemperature dallasTemp(&oneWire);
 //-----------------------------------------------------------------------
-//Alarm
-  bool hopsAlarm = false;
+//MAX31865 PT100 - Mash temperature
+Adafruit_MAX31865 PT100(MAX31865_CS, MAX31865_SI, MAX31865_SO, MAX31865_SCK);
+double tempPT100 = 0;
+double filteredTempPT100 = 0;
+unsigned long lastReadTime = 0;
+const unsigned long readInterval = 1000;  // ms
+// ====== CONFIG ======
+#define RREF      435.8
+#define RNOMINAL  100.0
+// ---- Replace these with your measured values ----
+double const CAL_T1  = 7.1;     // Real temperature point 1 (ice bath)
+double const CAL_T2  = 100.0;   // Real temperature point 2 (boiling water)
+
+double const CAL_M1  = 7.5;     // Measured temperature at T1
+double const CAL_M2  = 95.3;   // Measured temperature at T2
+// ================================================
+// Calibration coefficients (computed automatically)5
+double a;
+double b;
 
 //-----------------------------------------------------------------------
+//Alarm/Notifications
+bool mashFinishedNotified = false;
+bool lauteringFinishedNotified = false;
+bool hopFinishedNotified[3] = {false, false, false};
+bool whirlpoolFinishedNotified = false;
+
+// Reminder timers - repeat alarm every 5 min until the program is switched
+unsigned long lastMashReminderTime = 0;
+unsigned long lastLauteringReminderTime = 0;
+unsigned long lastWhirlpoolReminderTime = 0;
+const unsigned long REMINDER_INTERVAL_MS = 5UL * 60UL * 1000UL; // 5 minutes
+//-----------------------------------------------------------------------
 //Water indicator
-  bool waterDetected = true;
-  bool pumpWater = false; 
+bool waterDetected = true;
+bool tooHotForPump = false;
+bool pumpWater = false; 
 //-----------------------------------------------------------------------
 // Loop time measurement variables
 static uint32_t last  = 0;
@@ -391,6 +422,7 @@ void subscribeMQTT();
 void publishWifiMqttStatus();
 void publishMessage();
 
+void resetAllAlarmsOnBoot();
 void updateSettings();
 void updateSensorValues();
 void updateDisp2();
@@ -416,13 +448,14 @@ void setup() {//=================================================SETUP==========
   b = CAL_T1 - a * CAL_M1;
 
   currentTime = millis();
-  
-  //initialize Dallas Temperature
+
+  //initialize Dallas Temperature, oled temperature sensor
   dallasTemp.begin();
-  dallasTemp.setWaitForConversion(false);  // <-- add this
+  dallasTemp.setWaitForConversion(false);
   dallasTemp.requestTemperatures(); 
-  current_airTemp = dallasTemp.getTempCByIndex(0);
-  previous_airTemp = current_airTemp;
+  current_oledTemp = dallasTemp.getTempCByIndex(0);
+  Serial.print("Dallas sensors found: ");
+  Serial.println(dallasTemp.getDeviceCount());
 
   // configure LED PWM functionalitites
   ledcSetup(DC_Channel, freq, resolution);
@@ -447,18 +480,18 @@ void setup() {//=================================================SETUP==========
 
   Wire.begin(21, 22);           // pins only
 
-  // Serial.println("Scanning Wire...");
-  // for (uint8_t addr = 1; addr < 127; addr++)
-  // {
-  //     Wire.beginTransmission(addr);
-  //     uint8_t error = Wire.endTransmission();
-  //     if (error == 0)
-  //     {
-  //         Serial.print("Found device at 0x");
-  //         Serial.println(addr, HEX);
-  //     }
-  // }
-  // Serial.println("Wire done");
+  Serial.println("Scanning Wire...");
+  for (uint8_t addr = 1; addr < 127; addr++)
+  {
+      Wire.beginTransmission(addr);
+      uint8_t error = Wire.endTransmission();
+      if (error == 0)
+      {
+          Serial.print("Found device at 0x");
+          Serial.println(addr, HEX);
+      }
+  }
+  Serial.println("Wire done");
 
   display1.setI2CAddress(0x3C << 1); 
   display1.begin();  
@@ -520,6 +553,7 @@ void setup() {//=================================================SETUP==========
 
   setupWiFi(); //Home assistant
   setupMQTT(); //Home assistant
+  resetAllAlarmsOnBoot(); //Home assistant
 
   WiFi.onEvent([](WiFiEvent_t event) {
     if (event == SYSTEM_EVENT_STA_DISCONNECTED) {
@@ -770,31 +804,15 @@ void loop() { //=================================================LOOP===========
     // Serial.print(", DutyCycle: ");
     // Serial.print(DutyCycle);
   }
-  
 
   if (updateAllItems)
     display1.clearBuffer();
 
-  switch (currPage)
-  {
-    case MENU_ROOT: page_MenuRoot(); break;
-    case MENU_MODE: page_MENU_MODE(); break;
-    case MENU_CONTROL_MODE_LQG: page_MENU_CONTROL_MODE_LQG(); break;
-    case MENU_CONTROL_MODE_PI: page_MENU_CONTROL_MODE_PI(); break;
-    case MENU_IDENT_MODE: page_MENU_IDENT_MODE(); break;
-    case MENU_IDENT_TYPE: page_MENU_IDENT_TYPE(); break;
-    case MENU_IDENT_SINE: page_MENU_IDENT_SINE(); break;
-    case MENU_IDENT_MULTI_SINE: page_MENU_IDENT_MULTI_SINE(); break;
-    case MENU_IDENT_STEP_RESPONSE: page_MENU_IDENT_STEP_RESPONSE(); break;
-    case MENU_MANUAL_MODE: page_MENU_MANUAL_MODE(); break;
-    case MENU_MISC: page_MENU_MISC(); break;
-    case MENU_BREWING_LOCATION: page_MENU_BREWING_LOCATION(); break;
-    case MENU_MASH_PROGRAM: page_MENU_MASH_PROGRAM(); break;
-    case MENU_HOPS_PROGRAM: page_MENU_HOPS_PROGRAM(); break;
-    case MENU_WHIRLPOOL_PROGRAM: page_MENU_WHIRLPOOL_PROGRAM(); break;
-  }
+  renderCurrentPage();
+
   if (updateAllItems || updateItemValue)
   {
+    printPointer(); // added
     display1.sendBuffer();                        //välldigt långsam
     updateAllItems = false;
     updateItemValue = false;
@@ -846,7 +864,7 @@ void page_MenuRoot(){//=================================================ROOT_MEN
     cursorPos = root_pntrPos;
     dispOffset = root_dispOffset;
 
-    initMenuPage(F("MAIN MENU"), 5);
+    initMenuPage(F("MAIN MENU"), 6);
     initPage = false;
   }
 
@@ -858,11 +876,12 @@ void page_MenuRoot(){//=================================================ROOT_MEN
     initPage = true;
     switch (cursorPos)
     {
-      case 0: currPage = MENU_MODE;         changeValues[0] = false; edditing = false; return;
-      case 1: currPage = MENU_MISC;         changeValues[1] = false; edditing = false; return;
-      case 2: currPage = MENU_MASH_PROGRAM; changeValues[2] = false; edditing = false; return;
-      case 3: currPage = MENU_HOPS_PROGRAM; changeValues[3] = false; edditing = false; return;
-      case 4: currPage = MENU_WHIRLPOOL_PROGRAM; changeValues[4] = false; edditing = false; return;
+      case 0: currPage = MENU_MODE;               changeValues[0] = false; edditing = false; return;
+      case 1: currPage = MENU_MISC;               changeValues[1] = false; edditing = false; return;
+      case 2: currPage = MENU_MASH_PROGRAM;       changeValues[2] = false; edditing = false; return;
+      case 3: currPage = MENU_LAUTERING_PROGRAM;  changeValues[3] = false; edditing = false; return;
+      case 4: currPage = MENU_HOPS_PROGRAM;       changeValues[4] = false; edditing = false; return;
+      case 5: currPage = MENU_WHIRLPOOL_PROGRAM;  changeValues[5] = false; edditing = false; return;
     }
   }
   else
@@ -870,7 +889,7 @@ void page_MenuRoot(){//=================================================ROOT_MEN
 
   if(!(updateAllItems || updateItemValue)) return;
 
-  for(uint8_t i = 1; i <= 5; i++)
+  for(uint8_t i = 1; i <= 6; i++)
   {
     if(menuItemPrintable(1, i))
     {
@@ -879,8 +898,9 @@ void page_MenuRoot(){//=================================================ROOT_MEN
         case 1: display1.print(F("MODE ->            ")); break;
         case 2: display1.print(F("MISC               ")); break;
         case 3: display1.print(F("MASH PROGRAM       ")); break;
-        case 4: display1.print(F("HOPS PROGRAM       ")); break;
-        case 5: display1.print(F("WHIRLPOOL PROGRAM  ")); break;
+        case 4: display1.print(F("LAUTERING PROGRAM  ")); break;
+        case 5: display1.print(F("HOPS PROGRAM       ")); break;
+        case 6: display1.print(F("WHIRLPOOL PROGRAM  ")); break;
       }
     }
 
@@ -1481,11 +1501,29 @@ void page_MENU_MASH_PROGRAM(){//================================================
 
   if(changeValues[0])
   {
-    *&settings.startMashProgram = !*&settings.startMashProgram;
-    *&settings.startHopProgram = false;
-    *&settings.startWhirlpoolProgram = false;
-    if(settings.startMashProgram && waterDetected){settings.pump = true;}
-    else{settings.pump = false;}
+    if(settings.startMashProgram)
+    {
+      // Already running — stop immediately
+      settings.startMashProgram = false;
+      pendingMashStart = false;
+      settings.startLauteringProgram = false;
+      settings.startHopProgram = false;
+      settings.startWhirlpoolProgram = false;
+      settings.pump = false;
+    }
+    else
+    {
+      // Arm/disarm
+      pendingMashStart = !pendingMashStart;
+      pendingLauterStart = false;
+      pendingHopStart = false;
+      pendingWhirlpoolStart = false;
+      settings.startLauteringProgram = false;
+      settings.startHopProgram = false;
+      settings.startWhirlpoolProgram = false;
+      if(waterDetected) settings.pump = true;
+      if(pendingMashStart) settings.targetTemp = settings.mashTemps[0];
+    }
     changeValues [0] = false;
     updateItemValue = true; 
   } 
@@ -1541,7 +1579,9 @@ void page_MENU_MASH_PROGRAM(){//================================================
     {
       switch(i)
       {
-        case 1: printOnOff(settings.startMashProgram); break;
+        case 1:      if(settings.startMashProgram) printOnOff(true);
+                else if(pendingMashStart) display1.print(F("ARM "));
+                else printOnOff(false); break;
         case 2: printInt32_tAtWidth(settings.targetTemp, 3, "C"); break;
 
         case 4: printInt32_tAtWidth(settings.mashTemps[0], 3, "C"); break;
@@ -1558,6 +1598,106 @@ void page_MENU_MASH_PROGRAM(){//================================================
         case 4: printInt32_tAtWidth(settings.mashTimes[0], 3, "m"); break;
         case 5: printInt32_tAtWidth(settings.mashTimes[1], 3, "m"); break;
         case 6: printInt32_tAtWidth(settings.mashTimes[2], 3, "m"); break;
+      }
+    }
+  }
+}
+
+void page_MENU_LAUTERING_PROGRAM(){//=================================================LAUTERING_PROGRAM====================================================
+  if(initPage)
+  {
+    cursorPos = 0;
+    dispOffset = 0;
+    initMenuPage(F("Lautering Program"), 7);
+    memset(changeValues, 0, sizeof(changeValues));
+    initPage = false;
+  }
+ 
+  if(btnOk.Pressed())
+  {
+    FlashPointer();
+    changeValues[cursorPos] = !changeValues[cursorPos];
+    edditing = !edditing;
+  }
+ 
+  if(changeValues[0])
+  {
+    if(settings.startLauteringProgram)
+    {
+      // Already running — stop immediately
+      settings.startLauteringProgram = false;
+      pendingLauterStart = false;
+      settings.pump = false;
+    }
+    else
+    {
+      // Arm/disarm
+      pendingLauterStart = !pendingLauterStart;
+      pendingMashStart = false;
+      pendingHopStart = false;
+      pendingWhirlpoolStart = false;
+      settings.startMashProgram = false;
+      settings.startHopProgram = false;
+      settings.startWhirlpoolProgram = false;
+      if(waterDetected) settings.pump = true;
+      if(pendingLauterStart) settings.targetTemp = settings.lauteringTemp;
+    }
+    changeValues[0] = false;
+    updateItemValue = true;
+  }
+ 
+  else if(changeValues[3])incrementDecrementInt(&settings.lauteringTime, 1, 1, 120);
+  else if(changeValues[4]){incrementDecrementInt(&settings.lauteringTemp, 1, 15, settings.maxMashTemp); updateAllItems = true;}
+  else if(changeValues[6])
+  {
+    currPage = MENU_ROOT; 
+    sets_Save(); 
+    initPage = true; 
+    changeValues [6] = false;
+    updateItemValue = true; 
+  }
+  else 
+    doPointerNavigation();
+ 
+  static uint32_t lastUpdate = 0;
+ 
+  if (passedTimeS_lauteringProgram - lastUpdate >= 6)
+  {
+      updateAllItems = true;
+      lastUpdate = passedTimeS_lauteringProgram;
+  }
+ 
+  if(!(updateAllItems || updateItemValue)) return; 
+ 
+  display1.drawVLine(12 * CHAR_X, 0, 64);
+ 
+  for(uint8_t i = 1; i <= 7; i++)
+  {
+    if(menuItemPrintable(1, i))
+    {
+      switch(i)
+      {
+        case 1: display1.print(F("Timer             ")); break;
+        case 2: printDoubleAtWidth(passedTimeS_lauteringProgram/60.0, 3, "m");  break;
+        case 3: display1.drawHLine(5, display1.getCursorY(), 120); break;
+        case 4: display1.print(F("Lautering Time          ")); break;
+        case 5: display1.print(F("Lautering Temp          ")); break;
+        case 6: display1.drawHLine(5, display1.getCursorY(), 120); break;
+        case 7: display1.print(F("Back                    ")); break;
+      }
+    }
+    if(menuItemPrintable(13, i))
+    {
+      switch(i)
+      {
+        case 1:
+            if(settings.startLauteringProgram) printOnOff(true);
+            else if(pendingLauterStart) display1.print(F("ARM "));
+            else printOnOff(false);
+            break;
+        case 2: printInt32_tAtWidth(settings.targetTemp, 3, "C"); break;
+        case 4: printInt32_tAtWidth(settings.lauteringTime, 3, "m"); break;
+        case 5: printInt32_tAtWidth(settings.lauteringTemp, 3, "C"); break;
       }
     }
   }
@@ -1582,15 +1722,28 @@ void page_MENU_HOPS_PROGRAM(){//================================================
 
   if(changeValues[0])
   {
-    *&settings.startHopProgram = !*&settings.startHopProgram;
-    *&settings.startMashProgram = false;
-    *&settings.startWhirlpoolProgram = false;
-    settings.targetTemp = settings.boilTemp;
-    changeValues [0] = false;
-    updateItemValue = true; 
-  } 
+    if(settings.startHopProgram)
+    {
+      settings.startHopProgram = false;
+      pendingHopStart = false;
+      settings.pump = false;
+    }
+    else
+    {
+      pendingHopStart = !pendingHopStart;
+      pendingMashStart = false;
+      pendingLauterStart = false;
+      pendingWhirlpoolStart = false;
+      settings.startMashProgram = false;
+      settings.startLauteringProgram = false;
+      settings.startWhirlpoolProgram = false;
+      if(pendingHopStart) settings.targetTemp = settings.boilTemp;
+    }
+    changeValues[0] = false;
+    updateItemValue = true;
+  }
 
-  else if(changeValues[3])incrementDecrementInt(&settings.boilTime, 1, 60, 120);
+  else if(changeValues[3])incrementDecrementInt(&settings.boilTime, 1, 5, 120);
   else if(changeValues[4]){incrementDecrementInt(&settings.boilTemp, 1, 90, settings.maxMashTemp); updateAllItems = true;}
   else if(changeValues[6])incrementDecrementInt(&settings.hopTimes[0], 1, 0, 90);
   else if(changeValues[7])incrementDecrementInt(&settings.hopTimes[1], 1, 0, 90);
@@ -1641,7 +1794,11 @@ void page_MENU_HOPS_PROGRAM(){//================================================
     {
       switch(i)
       {
-        case 1: printOnOff(settings.startHopProgram); break;
+        case 1:
+          if(settings.startHopProgram) printOnOff(true);
+          else if(pendingHopStart) display1.print(F("ARM "));
+          else printOnOff(false);
+          break;
         case 2: printInt32_tAtWidth(settings.targetTemp, 3, "C"); break;
         case 4: printInt32_tAtWidth(settings.boilTime, 3, "m"); break;
         case 5: printInt32_tAtWidth(settings.boilTemp, 3, "C"); break;
@@ -1673,13 +1830,26 @@ void page_MENU_WHIRLPOOL_PROGRAM()//============================================
 
   if(changeValues[0])
   {
-    *&settings.startWhirlpoolProgram = !*&settings.startWhirlpoolProgram;
-    *&settings.startHopProgram = false;
-    *&settings.startMashProgram = false;
-    settings.targetTemp = settings.whirlpoolTemp;
-    changeValues [0] = false;
-    updateItemValue = true; 
-  } 
+    if(settings.startWhirlpoolProgram)
+    {
+      settings.startWhirlpoolProgram = false;
+      pendingWhirlpoolStart = false;
+      settings.pump = false;
+    }
+    else
+    {
+      pendingWhirlpoolStart = !pendingWhirlpoolStart;
+      pendingMashStart = false;
+      pendingLauterStart = false;
+      pendingHopStart = false;
+      settings.startMashProgram = false;
+      settings.startLauteringProgram = false;
+      settings.startHopProgram = false;
+      if(pendingWhirlpoolStart) settings.targetTemp = settings.whirlpoolTemp;
+    }
+    changeValues[0] = false;
+    updateItemValue = true;
+  }
 
   else if(changeValues[3])incrementDecrementInt(&settings.whirlpoolTime, 1, 1, 120);
   else if(changeValues[4]){incrementDecrementInt(&settings.whirlpoolTemp, 1, 60, settings.maxMashTemp); updateAllItems = true;}
@@ -1725,7 +1895,11 @@ void page_MENU_WHIRLPOOL_PROGRAM()//============================================
     {
       switch(i)
       {
-        case 1: printOnOff(settings.startWhirlpoolProgram); break;
+        case 1:
+            if(settings.startWhirlpoolProgram) printOnOff(true);
+            else if(pendingWhirlpoolStart) display1.print(F("ARM "));
+            else printOnOff(false);
+            break;
         case 2: printInt32_tAtWidth(settings.targetTemp, 3, "C"); break;
         case 4: printInt32_tAtWidth(settings.whirlpoolTime, 3, "m"); break;
         case 5: printInt32_tAtWidth(settings.whirlpoolTemp, 3, "C"); break;
@@ -1747,6 +1921,29 @@ void initMenuPage(String title, uint8_t itemCount){//=======================TOOL
   updateAllItems = true;
 }
 
+void renderCurrentPage()
+{
+  switch (currPage)
+  {
+    case MENU_ROOT: page_MenuRoot(); break;
+    case MENU_MODE: page_MENU_MODE(); break;
+    case MENU_CONTROL_MODE_LQG: page_MENU_CONTROL_MODE_LQG(); break;
+    case MENU_CONTROL_MODE_PI: page_MENU_CONTROL_MODE_PI(); break;
+    case MENU_IDENT_MODE: page_MENU_IDENT_MODE(); break;
+    case MENU_IDENT_TYPE: page_MENU_IDENT_TYPE(); break;
+    case MENU_IDENT_SINE: page_MENU_IDENT_SINE(); break;
+    case MENU_IDENT_MULTI_SINE: page_MENU_IDENT_MULTI_SINE(); break;
+    case MENU_IDENT_STEP_RESPONSE: page_MENU_IDENT_STEP_RESPONSE(); break;
+    case MENU_MANUAL_MODE: page_MENU_MANUAL_MODE(); break;
+    case MENU_MISC: page_MENU_MISC(); break;
+    case MENU_BREWING_LOCATION: page_MENU_BREWING_LOCATION(); break;
+    case MENU_MASH_PROGRAM: page_MENU_MASH_PROGRAM(); break;
+    case MENU_LAUTERING_PROGRAM: page_MENU_LAUTERING_PROGRAM(); break;
+    case MENU_HOPS_PROGRAM: page_MENU_HOPS_PROGRAM(); break;
+    case MENU_WHIRLPOOL_PROGRAM: page_MENU_WHIRLPOOL_PROGRAM(); break;
+  }
+}
+
 void doPointerNavigation() 
 {
   int direction = round(encoder.getRPM());
@@ -1764,13 +1961,14 @@ void doPointerNavigation()
       // Scroll logic
       if (cursorPos < dispOffset) {
         dispOffset = cursorPos;
-        updateAllItems = true; // Force update of all items
       } else if (cursorPos >= dispOffset + DISP_ITEM_ROWS) {
-        dispOffset = cursorPos - DISP_ITEM_ROWS + 1;
-        updateAllItems = true; // Force update of all items
+        dispOffset = cursorPos - DISP_ITEM_ROWS + 1; 
       }
-
-      printPointer();  // Only redraw when view actually changes
+      updateAllItems = true; // Force update of all items
+      // Navigation happens after loop() already checked updateAllItems,
+      // so clear the old framebuffer here before the page redraws.
+      display1.clearBuffer();
+      // printPointer();  // Only redraw when view actually changes
     }
     timeLastTouched = millis()/1000.0/60.0; // Update last touched time
     
@@ -2114,15 +2312,81 @@ void updateModelForCurrentTemp(LQGController& controller, double T, ModelID& act
   }
 }
 
+void resetAllAlarmsOnBoot()
+{
+  client.publish("mashTun/lautering_alarm", "0", true);
+  client.publish("mashTun/boil_alarm", "0", true);
+  client.publish("mashTun/hops_alarm", "0", true);
+  client.publish("mashTun/whirlpool_alarm", "0", true);
+}
+
 void updateSettings()
 {
   /* Krav
   I: Elementet får aldrig vara på om det inte finns vatten i bryggverket
   II: Pumpen får aldrig vara igång om det inte finns vatten i bryggverket
   */ 
+  constexpr float MARGIN = 0.03205f; // margin for temperature comparison (3.2%) aproximate to 2.5C
 
-  pumpWater = false;
   if(!waterDetected){pumpWater = false;} else {pumpWater = true;}
+
+  // --- Pending mash start: auto-trigger when setpoint reached ---
+  if(pendingMashStart && current_mashTemp >= settings.mashTemps[0] * (1.0f - MARGIN))
+  {
+    pendingMashStart = false;
+    settings.startMashProgram = true;
+    settings.startLauteringProgram = false;
+    settings.startHopProgram = false;
+    settings.startWhirlpoolProgram = false;
+    if(waterDetected) settings.pump = true;
+    updateAllItems = true;
+  }
+
+  if(pendingLauterStart && current_mashTemp >= settings.lauteringTemp * (1.0f - MARGIN))
+  {
+    pendingLauterStart = false;
+    settings.startMashProgram = false;
+    settings.startLauteringProgram = true;
+    settings.startHopProgram = false;
+    settings.startWhirlpoolProgram = false;
+    if(waterDetected) settings.pump = true;
+    updateAllItems = true;
+  }
+
+  if(pendingHopStart && current_mashTemp >= settings.boilTemp * (1.0f - MARGIN))
+  {
+    pendingHopStart = false;
+    settings.targetTemp = settings.boilTemp;   // <-- ADD THIS
+    settings.startMashProgram = false;
+    settings.startLauteringProgram = false;
+    settings.startHopProgram = true;
+    settings.startWhirlpoolProgram = false;
+    settings.pump = false; // hops kör utan pump
+    updateAllItems = true;
+  }
+
+  if(current_mashTemp >= 81 && !tooHotForPump) // i dont want the pump to go whne its over 80 degrees, it damages the pump 
+  {
+    tooHotForPump = true;
+    updateAllItems = true;
+  }
+  else if(current_mashTemp <= 79 && tooHotForPump)
+  {
+    tooHotForPump = false;
+    updateAllItems = true;
+  }
+
+  if(pendingWhirlpoolStart && current_mashTemp <= settings.whirlpoolTemp * (1.0f + MARGIN)  && current_mashTemp >= settings.whirlpoolTemp * (1.0f - MARGIN))
+  {
+    pendingWhirlpoolStart = false;
+    settings.startMashProgram = false;
+    settings.startLauteringProgram = false;
+    settings.startHopProgram = false;
+    settings.startWhirlpoolProgram = true;
+    settings.pump = true;
+    updateAllItems = true;
+  }
+  
   if(!settings.power){pumpWater = false;}
 
   // --- Pump ---
@@ -2131,7 +2395,7 @@ void updateSettings()
   // Serial.print("pumpWater: ");
   // Serial.println(pumpWater ? "YES" : "NO");
   
-  digitalWrite(pumpPin, settings.pump && pumpWater ? HIGH : LOW);
+  digitalWrite(pumpPin, settings.pump && pumpWater && !tooHotForPump ? HIGH : LOW);
 
   if(settings.power)
   {
@@ -2139,75 +2403,248 @@ void updateSettings()
     digitalWrite(ledWaterDetectedPin, !waterDetected);
 
     bool startMashProgram_ = settings.startMashProgram;
+    bool startLauteringProgram_ = settings.startLauteringProgram;
     bool startHopProgram_ = settings.startHopProgram;
     bool startWhirlpoolProgram_ = settings.startWhirlpoolProgram;
 
-
     // Reset tS när ett program startar eller byts
     bool programChanged = (startMashProgram_ != prevStartMashProgram_) || 
-                      (startHopProgram_ != prevStartHopProgram_) ||
-                      (startWhirlpoolProgram_ != prevStartWhirlpoolProgram_);
+                          (startLauteringProgram_ != prevStartLauteringProgram_) ||
+                          (startHopProgram_ != prevStartHopProgram_) ||
+                          (startWhirlpoolProgram_ != prevStartWhirlpoolProgram_);
 
     if(programChanged)
       updateAllItems = true; // Force update of all items when program starts/stops or changes
 
-    if (programChanged || (!startMashProgram_ && !startHopProgram_ && !startWhirlpoolProgram_)) {
+    // New mash program
+    if (startMashProgram_ && !prevStartMashProgram_)
+    {
+      currentMashStep = 0;
+      mashStepAtTemp = false;
+      mashStepTimerStartMs = 0;
+      mashCompletedTimeMs = 0;
+      passedTimeS_mashProgram = 0;
+      settings.targetTemp = settings.mashTemps[0];
+    }
+
+    if (programChanged || (!startMashProgram_ && !startLauteringProgram_ && !startHopProgram_ && !startWhirlpoolProgram_)) {
       tS = millis();
     }
 
-    prevStartMashProgram_ = startMashProgram_;
-    prevStartHopProgram_ = startHopProgram_;
+    // =====================================================
+    // MASH PROGRAM
+    // =====================================================
+    if (startMashProgram_)
+    {
+      settings.targetTemp = settings.mashTemps[currentMashStep];
+
+      // Wait for current step temperature before starting its timer
+      if (!mashStepAtTemp && current_mashTemp >= settings.mashTemps[currentMashStep] * (1.0f - MARGIN))
+      {
+        mashStepAtTemp = true;
+        mashStepTimerStartMs = millis();
+      }
+
+      unsigned long stepElapsedMs = mashStepAtTemp ? millis() - mashStepTimerStartMs : 0;
+      unsigned long stepDurationMs = (unsigned long)settings.mashTimes[currentMashStep] * 60000UL;
+
+      // Current mash step finished
+      if (mashStepAtTemp && stepElapsedMs >= stepDurationMs)
+      {
+        mashCompletedTimeMs += stepDurationMs;
+
+        if (currentMashStep < 2)
+        {
+          currentMashStep++;
+          settings.targetTemp = settings.mashTemps[currentMashStep];
+          mashStepAtTemp = false;
+          mashStepTimerStartMs = 0;
+          stepElapsedMs = 0;
+          updateAllItems = true;
+        }
+        else
+        {
+          // Final mash step finished
+          mashStepAtTemp = false;
+          mashStepTimerStartMs = 0;
+          stepElapsedMs = 0;
+
+          updateAllItems = true;
+        }
+      }
+
+      // Cumulative mash time; heating between steps is not counted
+      if (stepElapsedMs > stepDurationMs) stepElapsedMs = stepDurationMs;
+          passedTimeS_mashProgram = (mashCompletedTimeMs + stepElapsedMs) / 1000UL;
+    }
+    else
+    {
+      passedTimeS_mashProgram = 0;
+    }
+
+
+    // =====================================================
+    // OTHER PROGRAM TIMERS
+    // =====================================================
+    passedTimeS_lauteringProgram = startLauteringProgram_ ? (millis() - tS) * 0.001f : 0;
+    passedTimeS_hopProgram       = startHopProgram_       ? (millis() - tS) * 0.001f : 0;
+    passedTimeS_whirlpoolProgram = startWhirlpoolProgram_ ? (millis() - tS) * 0.001f : 0;
+
+
+    // Store states for next loop
+    prevStartMashProgram_      = startMashProgram_;
+    prevStartLauteringProgram_ = startLauteringProgram_;
+    prevStartHopProgram_       = startHopProgram_;
     prevStartWhirlpoolProgram_ = startWhirlpoolProgram_;
 
-    passedTimeS_mashProgram = startMashProgram_ ? (millis() - tS) * 0.001f : 0;
-    passedTimeS_hopProgram = startHopProgram_ ? (millis() - tS) * 0.001f : 0;
-    passedTimeS_whirlpoolProgram = settings.startWhirlpoolProgram ? (millis() - tS) * 0.001f : 0;
+    // Time to lauter notification
+    if(startMashProgram_ && passedTimeS_mashProgram / 60.0 >= settings.mashTimes[0] + settings.mashTimes[1] + settings.mashTimes[2])
+    {
+      settings.targetTemp = settings.lauteringTemp;
+      settings.pump = true;
 
-    settings.targetTemp = !startMashProgram_ ? settings.targetTemp :
-    (passedTimeS_mashProgram/60.0 < settings.mashTimes[0]) ? settings.mashTemps[0] :
-    (passedTimeS_mashProgram/60.0 < settings.mashTimes[0] + settings.mashTimes[1]) ? settings.mashTemps[1] :
-    (passedTimeS_mashProgram/60.0 < settings.mashTimes[0] + settings.mashTimes[1] + settings.mashTimes[2]) ? settings.mashTemps[2] :
-    15.0;
-    
-    // Serial.print("passedTimeS_mashProgram: ");
-    // Serial.println(passedTimeS_mashProgram/60.0);
-    // Serial.print(", settings.hopTimes[0]: ");
-    // Serial.print(settings.hopTimes[0]);
-    // Serial.print(", settings.hopTimes[1]: ");
-    // Serial.print(settings.hopTimes[1]);
-    // Serial.print(", settings.hopTimes[2]: ");
-    // Serial.print(settings.hopTimes[2]);
-    // Serial.print(", hopsAlarm: ");
-    // Serial.println(hopsAlarm);
+      if(!mashFinishedNotified)
+      {
+        mashFinishedNotified = true;
+        lastMashReminderTime = millis();
+        client.publish("mashTun/lautering_alarm", "1", true); // mäskningen är färdig, nu är det dags att laka
+      }
+      else if(millis() - lastMashReminderTime >= REMINDER_INTERVAL_MS)
+      {
+        lastMashReminderTime = millis();
+        client.publish("mashTun/lautering_reminder", "1", false); //  mäskningen är färdig, för helvete
+      }
+    }
+    else
+    {
+      if(mashFinishedNotified)
+      {
+        client.publish("mashTun/lautering_alarm", "0", true); // reset — condition no longer true
+      }
+      mashFinishedNotified = false;
+    }
+
+    // Time to boil notification
+    if(startLauteringProgram_ && passedTimeS_lauteringProgram / 60.0 >= settings.lauteringTime)
+    {
+      settings.targetTemp = settings.boilTemp;
+      settings.pump = false;
+
+      if(!lauteringFinishedNotified)
+      {
+        lauteringFinishedNotified = true;
+        lastLauteringReminderTime = millis();
+        client.publish("mashTun/boil_alarm", "1", true); // lakningen är färdig, nu är det dags att koka
+      }
+      else if(millis() - lastLauteringReminderTime >= REMINDER_INTERVAL_MS)
+      {
+        lastLauteringReminderTime = millis();
+        client.publish("mashTun/boil_reminder", "1", false); // lakningen är färdig, för helvete
+      }
+    }
+    else
+    {
+      if(lauteringFinishedNotified)
+      {
+        client.publish("mashTun/boil_alarm", "0", true); // reset — condition no longer true
+      }
+      lauteringFinishedNotified = false;
+    }
 
     float m = passedTimeS_hopProgram / 60.0f;
     float d = settings.alarmTime / 60.0f;
 
-    hopsAlarm = false;
     settings.hopIndex = -1;
 
+    // Time to hop notification
     if (startHopProgram_) {
         for (int i = 0; i < 3; i++) {
+            if (settings.hopTimes[i] == 0) continue; // hop addition disabled, no alarm
             float t = settings.boilTime - settings.hopTimes[i];
 
             if (m >= t && m < t + d) {
-                hopsAlarm = true;
                 settings.hopIndex = i + 1;
+
+                if (!hopFinishedNotified[i]) {
+                    hopFinishedNotified[i] = true;
+                    char payload[2];
+                    snprintf(payload, sizeof(payload), "%d", settings.hopIndex);
+                    client.publish("mashTun/hops_alarm", payload, true); // Nu är det dags att lägga i humlen
+                }
                 break;
+            } else {
+                  if (hopFinishedNotified[i]) 
+                  {
+                    client.publish("mashTun/hops_alarm", "0", true);
+                  }
+                  hopFinishedNotified[i] = false;
             }
         }
+    } 
+    else {
+        bool anyWasSet = false;
+        for (int i = 0; i < 3; i++) if (hopFinishedNotified[i]) anyWasSet = true;
+        if (anyWasSet) client.publish("mashTun/hops_alarm", "0", true);
+        memset(hopFinishedNotified, false, sizeof(hopFinishedNotified));
     }
+
+    // Time to whirlpool notification
+    if (startHopProgram_)
+    {
+      if(passedTimeS_hopProgram / 60.0 >= settings.boilTime)
+      {
+        settings.targetTemp = settings.whirlpoolTemp;
+        settings.pump = true;
+        if(settings.whirlpoolTime != 0)
+        {
+          if(!whirlpoolFinishedNotified)
+          {
+            whirlpoolFinishedNotified = true;
+            lastWhirlpoolReminderTime = millis();
+            client.publish("mashTun/whirlpool_alarm", "1", true); // Nu är kokningen färdig, nu är det dags att virvla
+          }
+          else if(millis() - lastWhirlpoolReminderTime >= REMINDER_INTERVAL_MS)
+          {
+            lastWhirlpoolReminderTime = millis();
+            client.publish("mashTun/whirlpool_reminder", "1", false); // kokningen är färdig, för helvete
+          }
+        }
+      } 
+      else
+      {
+        settings.targetTemp = settings.boilTemp;
+        settings.pump = false;
+      }
+    }
+
+    else
+    {
+      if(whirlpoolFinishedNotified)
+      {
+        client.publish("mashTun/whirlpool_alarm", "0", true); // reset — condition no longer true
+      }
+      
+      whirlpoolFinishedNotified = false;
+    }
+    
+   
 
     if (startWhirlpoolProgram_)
     {
-        if (passedTimeS_whirlpoolProgram / 60.0 < settings.whirlpoolTime)
-            settings.targetTemp = settings.whirlpoolTemp;
+        if (passedTimeS_whirlpoolProgram / 60.0 >= settings.whirlpoolTime)
+        {
+          settings.targetTemp = 15.0;
+          settings.pump = false;
+        }
+         
         else
-            settings.targetTemp = 15.0;
+        { 
+          settings.targetTemp = settings.whirlpoolTemp;
+          settings.pump = true;
+        }
     }
 
-
-    analogWrite(alarmPin, hopsAlarm ? settings.alarmVolume / 100.0f * 4095.0f : 0);
+    analogWrite(alarmPin, settings.hopIndex != -1 ? settings.alarmVolume / 100.0f * 4095.0f : 0);
 
     // PID_mashTemp.SetTunings(settings.Kp_mash, settings.Ki_mash, 0, settings.POnE_mash ? P_ON_E : P_ON_M);
     // PID_mashTemp.SetMode(AUTOMATIC);
@@ -2283,12 +2720,10 @@ void updateSensorValues() {
     filteredTempPT100 = Filter(calibratedTemp, filteredTempPT100, settings.filter_adc1, 100.0f);
     tempPT100 = roundTo(filteredTempPT100, 3); // Round to 3 decimal places
 
-    // Dallas: read result from PREVIOUS request, then fire next one
-    previous_airTemp = current_airTemp;
-    current_airTemp = dallasTemp.getTempCByIndex(0);  // reads last conversion
-    dallasTemp.requestTemperatures();                 // fires next (non-blocking)
-
     waterDetected = !digitalRead(waterDetectedPin);
+
+    current_oledTemp = dallasTemp.getTempCByIndex(0);
+    dallasTemp.requestTemperatures();
 
   //  Serial.printf(
   //   "tempPT100: %.3f C, kLoss_W_per_degC: %.3f, Active Model: %s\n",
@@ -2556,25 +2991,37 @@ void publishMessage() //Home Assistant only
 
   // --- LQGI Model debug  ---
   // doc["activeModel"]   = modelIDToString(activeModel);
-  doc["lqgDebug"] = mashCtrlLQG.GetDebugString();
+  if (activeModel == MODEL_Boil)
+  {
+    doc["Debug_log"] = boilCtrl.GetDebugString();
+  }
+  else
+  {
+    doc["Debug_log"] = mashCtrlLQG.GetDebugString();
+  }
 
   // --- Core readings ---
   doc["mashTempPT100"] = roundTo(current_mashTemp, 3);  // 3 decimal
   doc["airTemp"]       = roundTo(*ambientTempPtr, 2);   // 2 decimal
   doc["timePassed"] = roundTo(
-      (settings.startMashProgram ? passedTimeS_mashProgram :
-      settings.startHopProgram  ? passedTimeS_hopProgram  :
+      (
+        settings.startLauteringProgram ? passedTimeS_lauteringProgram :
+        settings.startMashProgram ? passedTimeS_mashProgram :
+        settings.startHopProgram  ? passedTimeS_hopProgram  :
                                   0.0f) / 60.0f,1);
   // --- Setpoint ---
   doc["targetTemp"]    = settings.targetTemp;
+
+  // --- OLED temperature display ---
+  doc["displayTemp"]   = roundTo(current_oledTemp, 1);
 
   // --- Power / control ---
   doc["dutyCycle"]     = roundTo(DutyCycle / 4095.0f * 100.0f, 3);
   doc["powerIn"]       = roundTo(DutyCycle * PWM_to_W, 1); // integer watts
 
   // --- Boolean states (REAL booleans) ---
-  doc["pumpOn"]        = (settings.pump && pumpWater);
-  doc["hopsAlarm"]     = hopsAlarm;
+  doc["pumpOn"]        = (settings.pump && pumpWater && !tooHotForPump);
+  // doc["hopsAlarm"]     = hopsAlarm;
   doc["waterDetected"] = waterDetected;
 
   doc["hopIndex"] = settings.hopIndex; // e.g. "hop1": true

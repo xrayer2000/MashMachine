@@ -34,10 +34,6 @@ PressButton btnOk(confirmBtnPin, 10); //debounce (ISR-attached inside library)
 //-----------------------------------------------------------------------
 
 enum pageType currPage = MENU_ROOT;
-void page_MenuRoot();
-void page_MENU_CONTROL_MODE_PI();
-void page_MENU_MISC();
-void page_MENU_BREWING_LOCATION();
 
 //-----------------------------------------------------------------------
 //Menu internals
@@ -81,13 +77,11 @@ double current_lauterTemp;
 double previous_lauterTemp;
 double rawTemp;
 
-double current_airTemp;
 double outdoorTemp; //received from home assistant (Norwegian Meteorological Institute)
 double previous_outdoorTemp;
 double indoorTemp; //received from home assistant (STM32f411 and esp32 xiao with bmp280 sensor)
 double previous_indoorTemp;
-double* ambientTempPtr = &current_airTemp;
-double previous_airTemp;
+double* ambientTempPtr = &outdoorTemp;
 
 double DutyCycle = 0;
 double previousDutyCycle = 0;
@@ -95,7 +89,6 @@ double previousDutyCycle = 0;
 // PID PID_lauterTemp(&current_lauterTemp, &Output_lauterTemp, &settings.targetTemp, &current_airTemp, settings.Kp_lauter, settings.Ki_lauter, 0, 0, DIRECT); //P_ON_M
 PI_Controller lauterCtrl_PI(&current_lauterTemp, &Output_lauterTemp, &settings.targetTemp, ambientTempPtr); //PI controller with heat loss compensation
 double lastKp = NAN;
-double lastKi = NAN;
 double lastKHeat = NAN;
 double lastDeadband1 = NAN;
 double lastDeadband2 = NAN;
@@ -103,7 +96,7 @@ double lastGamma = NAN;
 double currentHeaterPower_W = 0.0;
 //-----------------------------------------------------------------------
 // setting PWM properties
-int freq = 240; //5
+int freq = 5; //240
 const int DC_Channel = 0;
 const int resolution = 12;
 //-----------------------------------------------------------------------
@@ -128,21 +121,15 @@ bool changeValues [20];
   #define RREF      435.8
   #define RNOMINAL  100.0
   // ---- Replace these with your measured values ----
-  double const CAL_T1  = 7.1;     // Real temperature point 1 (ice bath)
-  double const CAL_T2  = 100.0;   // Real temperature point 2 (boiling water)
+  double const CAL_T1  = 8.7;     // Real temperature point 1 (ice bath)
+  double const CAL_T2  = 99.5;   // Real temperature point 2 (boiling water)
 
-  double const CAL_M1  = 7.5;     // Measured temperature at T1
-  double const CAL_M2  = 95.3;   // Measured temperature at T2
+  double const CAL_M1  = 9.3;     // Measured temperature at T1
+  double const CAL_M2  = 98.2;   // Measured temperature at T2
   // ================================================
   // Calibration coefficients (computed automatically)
   double a;
   double b;
-
-//-----------------------------------------------------------------------
-//Dallas Temperature - Air temperature
-  OneWire oneWire(ONE_WIRE_BUS);
-  DallasTemperature dallasTemp(&oneWire);
-//-----------------------------------------------------------------------
 
 //-----------------------------------------------------------------------
 //Water indicator
@@ -256,7 +243,7 @@ void setup() {//=================================================SETUP==========
   setupMQTT(); //Home assistant
 
   WiFi.onEvent([](WiFiEvent_t event) {
-    if (event == SYSTEM_EVENT_STA_DISCONNECTED) {
+    if (event == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) {
       if (client.connected()) {
         client.publish("esp32/wifi", "offline", true);
       }
@@ -270,12 +257,12 @@ void setup() {//=================================================SETUP==========
   // --- Output range ---
   lauterCtrl_PI.SetHeaterPowerLimits(0.0, heaterRatedPower_W);
   // --- Tunings ---
-  lauterCtrl_PI.SetTunings(settings.Kp_lauter, settings.Ki_lauter, settings.k_heatLoss);
+  lauterCtrl_PI.SetTunings(settings.Kp_lauter, 0, settings.k_heatLoss);
   // --- Safety / behavior ---
   lauterCtrl_PI.SetCaptureBands(settings.deadband1, settings.deadband2, settings.gamma); // °C  // Switch from full power to regulation at ±5 °C
   lauterCtrl_PI.SetIntegralLimit(0.25 * heaterRatedPower_W);
   // Start with feedforward only
-  double Q0 = settings.k_heatLoss * (current_lauterTemp - current_airTemp);
+  double Q0 = settings.k_heatLoss * (current_lauterTemp - *ambientTempPtr);
   lauterCtrl_PI.Reset(Q0);
 
 }
@@ -339,8 +326,23 @@ void loop() { //=================================================LOOP===========
 
     float Q_W = 0.0;
 
-    lauterCtrl_PI.Compute();
-    Q_W = lauterCtrl_PI.GetCurrentPower_W();
+    // =========================
+    // MODE SUPERVISOR
+    // =========================
+
+    switch(settings.systemMode)
+    {
+      case MODE_CONTROL_Proportional:
+
+        lauterCtrl_PI.Compute();
+        Q_W = lauterCtrl_PI.GetCurrentPower_W();
+        
+          break;
+
+      case MODE_MANUAL:
+          Q_W = settings.manualPower;
+          break;
+    }
 
     // Saturate power
     Q_W = constrain(Q_W, 0.0, heaterRatedPower_W);
@@ -370,7 +372,9 @@ void loop() { //=================================================LOOP===========
   switch (currPage)
   {
     case MENU_ROOT: page_MenuRoot(); break;
-    case MENU_CONTROL_MODE_PI: page_MENU_CONTROL_MODE_PI(); break;
+    case MENU_MODE: page_MENU_MODE(); break;
+    case MENU_CONTROL_MODE_Proportional: page_MENU_CONTROL_MODE_Proportional(); break;
+    case MENU_MANUAL_MODE: page_MENU_MANUAL_MODE(); break;
     case MENU_MISC: page_MENU_MISC(); break;
     case MENU_BREWING_LOCATION: page_MENU_BREWING_LOCATION(); break;
   }
@@ -382,7 +386,7 @@ void loop() { //=================================================LOOP===========
   }
 
   // printPointer();     // this one take long time
-  if (current_lauterTemp != previous_lauterTemp || current_airTemp != previous_airTemp || DutyCycle != previousDutyCycle || settings.targetTemp != oldSettings.targetTemp)
+  if (current_lauterTemp != previous_lauterTemp || outdoorTemp != previous_outdoorTemp || indoorTemp != previous_indoorTemp || DutyCycle != previousDutyCycle || settings.targetTemp != oldSettings.targetTemp)
   {
     updateDisp2();
     previousPassedTime2 = passedTime;
@@ -439,8 +443,8 @@ void page_MenuRoot(){//=================================================ROOT_MEN
     initPage = true;
     switch (cursorPos)
     {
-      case 0: currPage = MENU_CONTROL_MODE_PI;         changeValues[0] = false; edditing = false; return;
-      case 1: currPage = MENU_MISC;                    changeValues[1] = false; edditing = false; return;
+      case 0: currPage = MENU_MODE;         changeValues[0] = false; edditing = false; return;
+      case 1: currPage = MENU_MISC;         changeValues[1] = false; edditing = false; return;
     }
   }
   else
@@ -454,19 +458,68 @@ void page_MenuRoot(){//=================================================ROOT_MEN
     {
       switch(i)
       {
-        case 1: display1.print(F("MODE               ")); break;
+        case 1: display1.print(F("MODE ->            ")); break;
         case 2: display1.print(F("MISC               ")); break;
+      }
+    }
+
+    if(menuItemPrintable(7, i))
+    {
+      switch(i)
+      {
+        case 1: printStringAtWidth(systemModeToString(settings.systemMode), 4); break;
       }
     }
   }
 }
 
-void page_MENU_CONTROL_MODE_PI(){//=================================================CONTROL_MODE_PI============================================
+void page_MENU_MODE(){//=================================================MODE============================================
   if(initPage)
   {
     cursorPos = 0;
     dispOffset = 0;
-    initMenuPage(F("CONTROL MODE (PI)"), 9);
+    initMenuPage(F("MODE"), 4);
+    initPage = false;
+  }
+
+  if(btnOk.Pressed())
+  {
+    switch (cursorPos)
+    {
+      case 0: FlashPointer(); initPage = true; currPage = MENU_CONTROL_MODE_Proportional; return;
+      case 1: FlashPointer(); initPage = true; currPage = MENU_MANUAL_MODE; return;
+      case 3: FlashPointer(); initPage = true; currPage = MENU_ROOT; sets_Save(); return;
+      default: return;
+    }
+  }
+  else
+    doPointerNavigation();
+
+
+  if(!(updateAllItems || updateItemValue)) return;
+
+  for(uint8_t i = 1; i <= 4; i++)
+  {
+    if(menuItemPrintable(1, i))
+    {
+      switch(i)
+      {
+        case 1: display1.print(F("CONTROL MODE (Kp) ")); break;
+        case 2: display1.print(F("MANUAL MODE       ")); break;
+        case 3: display1.drawHLine(5, display1.getCursorY(), 120); break;
+        case 4: display1.print(F("Back              ")); break;
+      }
+    }
+  }
+}
+
+void page_MENU_CONTROL_MODE_Proportional(){
+  //=================================================CONTROL_MODE_Proportional============================================
+  if(initPage)
+  {
+    cursorPos = 0;
+    dispOffset = 0;
+    initMenuPage(F("CONTROL MODE (Kp)"), 9);
     memset(changeValues, 0, sizeof(changeValues));
     initPage = false;
   }
@@ -478,14 +531,14 @@ void page_MENU_CONTROL_MODE_PI(){//=============================================
     edditing = !edditing;
   }
 
-       if(changeValues[0]){incrementDecrementDouble(&settings.targetTemp, 1.0, 15.0, settings.maxMashTemp); settings.targetTemp = round(settings.targetTemp);}
-  else if(changeValues[1])incrementDecrementDouble(&settings.Kp_lauter, 0.5, 0.0, 500.0);
-  else if(changeValues[2])incrementDecrementDouble(&settings.Ki_lauter, 0.01, 0.0, 10.0);
-  else if(changeValues[3])incrementDecrementDouble(&settings.k_heatLoss, 0.1, 0.0, 25.0);
+       if(changeValues[0]){*&settings.systemMode = MODE_CONTROL_Proportional; changeValues [0] = false; updateItemValue = true; }
+  else if(changeValues[1]){incrementDecrementDouble(&settings.targetTemp, 1.0, 5.0, settings.maxMashTemp); settings.targetTemp = round(settings.targetTemp);}
+  else if(changeValues[2])incrementDecrementDouble(&settings.Kp_lauter, 0.1, 0.0, 50.0);
+  else if(changeValues[3])incrementDecrementDouble(&settings.k_heatLoss, 0.025, 0.0, 5.0);
   else if(changeValues[4])incrementDecrementDouble(&settings.deadband1, 0.5, settings.deadband2, 20.0);
   else if(changeValues[5])incrementDecrementDouble(&settings.deadband2, 0.1, 0.0, settings.deadband1);
   else if(changeValues[6])incrementDecrementDouble(&settings.gamma, 0.01, 0.0, 1.0);
-  else if(changeValues[8]) {currPage = MENU_ROOT; sets_Save(); changeValues[8] = false; initPage = true;}
+  else if(changeValues[8]) {currPage = MENU_ROOT; sets_Save(); changeValues[7] = false; initPage = true;}
   else 
     doPointerNavigation(); 
 
@@ -499,9 +552,9 @@ void page_MENU_CONTROL_MODE_PI(){//=============================================
     {
       switch(i)
       {
-        case 1: display1.print(F("Setpoint ")); break;
-        case 2: display1.print(F("Kp       ")); break;
-        case 3: display1.print(F("Ki       ")); break;
+        case 1: display1.print(F("Activate ")); break;
+        case 2: display1.print(F("Setpoint ")); break;
+        case 3: display1.print(F("Kp       ")); break;
         case 4: display1.print(F("k_heat   ")); break;
         case 5: display1.print(F("Band 1   ")); break;
         case 6: display1.print(F("Band 2   ")); break;
@@ -514,10 +567,10 @@ void page_MENU_CONTROL_MODE_PI(){//=============================================
     {
       switch(i)
       {
-        case 1: printInt32_tAtWidth((uint32_t)settings.targetTemp, 3, "C"); break;
-        case 2: printDoubleAtWidth(settings.Kp_lauter, 4, "W/C"); break;
-        case 3: printDoubleAtWidth(settings.Ki_lauter, 4, "W/Cs", 2); break;
-        case 4: printDoubleAtWidth(settings.k_heatLoss, 4, "W/C"); break;
+        case 1: printOnOff(settings.systemMode == MODE_CONTROL_Proportional); break;
+        case 2: printInt32_tAtWidth((uint32_t)settings.targetTemp, 3, "C"); break;
+        case 3: printDoubleAtWidth(settings.Kp_lauter, 4, "W/C"); break;
+        case 4: printDoubleAtWidth(settings.k_heatLoss, 4, "W/C", 2); break;
         case 5: printDoubleAtWidth(settings.deadband1, 4, "C"); break;
         case 6: printDoubleAtWidth(settings.deadband2, 3, "C"); break;
         case 7: printDoubleAtWidth(settings.gamma, 4, " ", 2); break;
@@ -526,6 +579,42 @@ void page_MENU_CONTROL_MODE_PI(){//=============================================
   }
 }
 
+void page_MENU_MANUAL_MODE(){//=================================================MANUAL_MODE============================================
+
+  if(initPage)
+  {
+    cursorPos = 0;
+    dispOffset = 0;
+    initMenuPage(F("MANUAL MODE"), 3);
+    memset(changeValues, 0, sizeof(changeValues));
+    initPage = false;
+  }
+  
+  if(btnOk.Pressed())
+  {
+    FlashPointer();
+
+    switch (cursorPos)
+    {
+      case 0: changeValues[0] = !changeValues[0]; edditing = !edditing; break;
+      case 1: changeValues[1] = !changeValues[1]; edditing = !edditing; break;
+      case 2: currPage = MENU_MODE; sets_Save(); initPage = true; return;
+    }
+  }
+
+       if(changeValues[0]){*&settings.systemMode = MODE_MANUAL; changeValues [0] = false; updateItemValue = true; }
+  else if(changeValues[1]) incrementDecrementDouble(&settings.manualPower, 1.0, 0.0, heaterRatedPower_W);
+  else 
+    doPointerNavigation();
+
+  if(menuItemPrintable(1,1)){display1.print(F("Activate               "));}
+  if(menuItemPrintable(1,2)){display1.print(F("Power                  "));}
+  if(menuItemPrintable(1,3)){display1.print(F("Back                   "));}
+
+  if(menuItemPrintable(10,1)){printOnOff(settings.systemMode == MODE_MANUAL);}
+  if(menuItemPrintable(10,2)){printDoubleAtWidth(settings.manualPower, 4, "W", 1);}
+
+}
 
 void page_MENU_MISC(){//=================================================MISC==========================================================
   if(initPage)
@@ -858,6 +947,17 @@ const char* brewingLocationToString(BrewingLocation location)
   }
 }
 
+const char* systemModeToString(SystemMode mode)
+{
+  switch(mode)
+  {
+    case MODE_CONTROL_Proportional:   return "CONTROL";
+    case MODE_MANUAL:                 return "MANUAL";
+    default:                          return "UNKNOWN";
+  }
+}
+
+
 
 //======================================================DISPLAY_2======================================================
 void printCharsDisplay2(uint8_t cnt, char c){
@@ -911,25 +1011,19 @@ void updateSettings()
     digitalWrite(ledOnPin, HIGH);
     digitalWrite(ledWaterDetectedPin, !waterDetected);
 
-
-    float m = passedTimeS_hopProgram / 60.0f;
-    float d = settings.alarmTime / 60.0f;
-
-
     //analogWrite(alarmPin, hopsAlarm ? settings.alarmVolume / 100.0f * 4095.0f : 0);
 
     // --- Retune controller ONLY if changed ---
-    if (settings.Kp_lauter != lastKp || settings.Ki_lauter != lastKi 
-    || settings.k_heatLoss != lastKHeat || settings.deadband1 != lastDeadband1 || settings.deadband2 != lastDeadband2
+    if (settings.Kp_lauter != lastKp || settings.k_heatLoss != lastKHeat
+    || settings.deadband1 != lastDeadband1 || settings.deadband2 != lastDeadband2
     || settings.gamma != lastGamma)
     {
-      lauterCtrl_PI.SetTunings(settings.Kp_lauter, settings.Ki_lauter, settings.k_heatLoss);
+      lauterCtrl_PI.SetTunings(settings.Kp_lauter, 0, settings.k_heatLoss);
       lauterCtrl_PI.SetCaptureBands(settings.deadband1, settings.deadband2, settings.gamma);
-      double Q0 = settings.k_heatLoss * (current_lauterTemp - current_airTemp);
-      lauterCtrl_PI.Reset(Q0);
+      double Q0 = settings.k_heatLoss * (settings.targetTemp - *ambientTempPtr);
+      // lauterCtrl_PI.Reset(Q0);
 
       lastKp = settings.Kp_lauter;
-      lastKi = settings.Ki_lauter;
       lastKHeat = settings.k_heatLoss;
       lastDeadband1 = settings.deadband1;
       lastDeadband2 = settings.deadband2;
@@ -984,11 +1078,6 @@ void updateSensorValues() {
     filteredTempPT100 = Filter(calibratedTemp, filteredTempPT100, settings.filter_adc1, 100.0f);
     tempPT100 = roundTo(filteredTempPT100, 3); // Round to 3 decimal places
 
-    // Dallas: read result from PREVIOUS request, then fire next one
-    previous_airTemp = current_airTemp;
-    current_airTemp = dallasTemp.getTempCByIndex(0);  // reads last conversion
-    dallasTemp.requestTemperatures();                 // fires next (non-blocking)
-
     waterDetected = !digitalRead(waterDetectedPin);
 
 
@@ -1029,7 +1118,7 @@ void updateDisp2()
   #define DUTY_TO_PERCENT 0.02442002442f
   display2.clearBuffer();
   display2.setCursor(DISP2_CHAR_X * 1,  DISP2_CHAR_Y * 1); display2.print(F("TargetTemp:"));
-  display2.setCursor(DISP2_CHAR_X * 1,  DISP2_CHAR_Y * 2); display2.print(F("MashTemp:  "));
+  display2.setCursor(DISP2_CHAR_X * 1,  DISP2_CHAR_Y * 2); display2.print(F("LauterTemp:  "));
   display2.setCursor(DISP2_CHAR_X * 1,  DISP2_CHAR_Y * 3); display2.print(F("DC:        "));
   display2.setCursor(DISP2_CHAR_X * 1,  DISP2_CHAR_Y * 4); display2.print(F("AirTemp:   "));
 
@@ -1223,7 +1312,7 @@ void handleMQTT()
 
 void publishMessage() //Home Assistant only
 {
-  StaticJsonDocument<512> doc;
+  JsonDocument doc;
 
   // --- Core readings ---
   doc["lauteringTemp"] = roundTo(current_lauterTemp, 3);  // 3 decimal
@@ -1241,7 +1330,6 @@ void publishMessage() //Home Assistant only
 
   // --- PI parameters ---
   doc["kp"]            = roundTo(settings.Kp_lauter, 1);
-  doc["ki"]            = roundTo(settings.Ki_lauter, 3);
   doc["heatLoss"]      = roundTo(settings.k_heatLoss, 1); //change to: model->kLoss_W_per_degC
 
   // --- Filters (rounded for readability) ---

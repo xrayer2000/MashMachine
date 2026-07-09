@@ -7,21 +7,21 @@
 PI_Controller::PI_Controller(double* input, double* output, double* setpoint, double* airTemp)
 : T_(input), U_(output), Tset_(setpoint), Tair_(airTemp)
 {
-    kp_ = 30.0; //50C: kp = 45,     //65C: kp = 30,     75c: kp = 21.0 (65C,kp=70 -> oscillations), (75C,kp=70 -> oscillations)
+    kp_ = 0.0; //50C: kp = 45,     //65C: kp = 30,     75c: kp = 21.0 (65C,kp=70 -> oscillations), (75C,kp=70 -> oscillations)
     ki_ = 0.00; //
-    kHeat_ = 0.7 * 1.65; // 165W/C 70% conservative  //kHeat = 1.5
+    kHeat_ = 0; //0.7 * 1.65; // 165W/C 70% conservative  //kHeat = 1.5
 
     I_ = 0.0;
     Imax_ = 0.0;
 
-    band1_ = 10.0; // °C 
-    band2_ = 5.0;  // °C 
-    gamma_ = 0.35;
+    band1_ = 4.0; // °C 
+    band2_ = 0.5;  // °C 
+    gamma_ = 0.5;
 
     Qmin_W_ = 0.0;
     Qmax_W_ = heaterRatedPower_W;
 
-    Ts_ms_ = 500;
+    Ts_ms_ = 1000;
     lastTime_ = 0;
 
     // scale ki on construction
@@ -103,7 +103,7 @@ bool PI_Controller::Compute()
     // =========================================================
     // Feedforward (heat loss)
     // =========================================================
-    double Qff = kHeat_ * (T - Tair);
+    double Qff = kHeat_ * (r - Tair);
     Qff = max(0.0, Qff);
 
     double Qcmd = 0.0;
@@ -130,7 +130,6 @@ bool PI_Controller::Compute()
         t             = Clamp(t, 0.0, 1.0);
         double s      = pow(t, gamma_);
         Qcmd          = Qmax_W_ - deltaY * s;
-
         Qcmd = Clamp(Qcmd, Qff + P, Qmax_W_);
     }
     // ---------- PHASE 3: REGULATE (PI + FF) ----------

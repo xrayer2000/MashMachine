@@ -38,11 +38,8 @@ RotaryEncoderAccel::RotaryEncoderAccel(int pin1, int pin2) {
   _pin2 = pin2;
 
   // Setup the input pins
-  pinMode(pin1, INPUT);
-  digitalWrite(pin1, HIGH);   // turn on pullup resistor
-
-  pinMode(pin2, INPUT);
-  digitalWrite(pin2, HIGH);   // turn on pullup resistor
+  pinMode(pin1, INPUT_PULLUP);
+  pinMode(pin2, INPUT_PULLUP);
 
   // when not started in motion, the current state of the encoder should be 3
   _oldState = 3;
@@ -62,16 +59,21 @@ int  RotaryEncoderAccel::getPosition() {
 
 void RotaryEncoderAccel::calculateDirection()
 {
+
   if (_positionExtPrev > _positionExt) { 
+    _positionExtPrev = _positionExt;
     _direction = Direction::COUNTERCLOCKWISE;
+    //Serial.print(", Direction: COUNTERCLOCKWISE ");
   }  
   else if (_positionExtPrev < _positionExt) {  
+    _positionExtPrev = _positionExt;
     _direction = Direction::CLOCKWISE;
+    //Serial.print(", Direction: CLOCKWISE ");
   } 
   else{
+    _positionExtPrev = _positionExt;
     _direction = Direction::NOROTATION;
   }
- 
 }
 
 RotaryEncoderAccel::Direction RotaryEncoderAccel::getDirection()
@@ -94,14 +96,33 @@ void RotaryEncoderAccel::tick(void)
   detectRotation = false;
 
   if (_oldState != thisState) {
-    int oldPositionExt = _positionExt;
-    _position += KNOBDIR[thisState | (_oldState<<2)];
+    _position += KNOBDIR[thisState | (_oldState << 2)];
+    _positionExt = _position >> 2;  // Divide by 2 to get the external position.
 
-    if (thisState == LATCHSTATE) 
-    {
-      _positionExt = _position >> 2;
-      // Only update time if position actually changed
-      if (_positionExt != oldPositionExt) {
+    // DEBUG
+    // Serial.print("state: ");
+    // Serial.print(_oldState);
+    // Serial.print(" -> ");
+    // Serial.print(thisState);
+    // Serial.print("  pos: ");
+    // Serial.print(_position);
+    // Serial.print("  posExt: ");
+    // Serial.println(_positionExt);
+
+    if (thisState == LATCHSTATE) {
+      detectRotation = true;
+      if (accel > 0) {
+        unsigned long actualTick = millis();
+        unsigned long delta = actualTick - prevTick;
+        if (delta != 0 && delta < accel) {
+          unsigned long increment = (accel / delta - 1) * KNOBDIR[thisState | (_oldState << 2)];
+          _position += increment * multipleter;
+          _positionExt = _position >> 2;  // Divide by 4 to get the external position.
+        }
+        prevTick = actualTick;
+      }
+
+      if (_positionExt != _positionExtPrev) {
         _positionExtTimePrev = _positionExtTime;
         _positionExtTime = millis();
       }
@@ -110,7 +131,6 @@ void RotaryEncoderAccel::tick(void)
     _oldState = thisState;
   }
 }
-
 
 void RotaryEncoderAccel::setAccel(unsigned int value1, int value2 = 1) {
 	prevTick = millis();
@@ -129,31 +149,38 @@ float RotaryEncoderAccel::getRPM()
   unsigned long timeBetweenLastPositions = getMillisBetweenRotations();
   unsigned long timeToLastPosition = millis() - _positionExtTime;
   unsigned long t = max(timeBetweenLastPositions, timeToLastPosition);
-  float rpm; 
-  
-  calculateDirection();
- 
-  if(_direction != Direction::NOROTATION)
-  { 
-    // Serial.print("\tposPrev: ");
-    // Serial.print(_positionExtPrev);
-    // Serial.print(",\tposExt: ");
-    // Serial.print(_positionExt);
-    // Serial.print(",\tDir: ");
-    // Serial.println((int)_direction);
 
-    _positionExtPrev = _positionExt;
-    
+  float rpm; 
+  calculateDirection();
+
+  if(_direction != Direction::NOROTATION)
+  {
+    // Serial.print(", Time: ");
+    // Serial.print(_positionExtTime);
+    // Serial.print(", TimePrev: ");
+    // Serial.print(_positionExtTimePrev);
+    // if(timeBetweenLastPositions == 0)
+    // {
+    //   Serial.println(" , timeBetweenLastPositions == 0");
+
+    // }
+    // else 
+    // {
+    //   Serial.println();
+    // }
+
+    int threshold = 4;
     switch (_direction) {
       case Direction::CLOCKWISE:
         rpm = 60000.0 / ((float)(t * 20 * 10));
-        if(rpm < 1.0) rpm = 1.0;
+        if(rpm < threshold) rpm = 1;
           return rpm;
       case Direction::COUNTERCLOCKWISE:
         rpm = -60000.0 / ((float)(t * 20 * 10));
-        if(rpm > -1.0) rpm = -1.0;
+        if(rpm > - threshold) rpm = -1;
           return rpm;
-    }
+    }  
+    
   }
   else {
     rpm = 0;

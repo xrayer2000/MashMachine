@@ -14,7 +14,6 @@
 #include <math.h>
 #include <Adafruit_MAX31865.h>
 #include <OneWire.h>
-#include <DallasTemperature.h>
 #include <HTTPClient.h>
 #include <time.h>
 
@@ -33,7 +32,6 @@
 #define MAX31865_SI         23
 #define pumpPin             27
 #define alarmPin            13
-#define ONE_WIRE_BUS        16
 #define waterDetectedPin    34
 
 // -----------------------------------------------------------------------
@@ -60,31 +58,40 @@ enum BrewingLocation {
     InDoor
 };
 
+//Menu pages
 enum pageType {
     MENU_ROOT,
     MENU_MODE,
-    MENU_CONTROL_MODE_PI,
+    MENU_CONTROL_MODE_Proportional,
+    MENU_MANUAL_MODE,
     MENU_MISC,
-    MENU_BREWING_LOCATION,
+    MENU_BREWING_LOCATION
+};
+
+//System Mode
+enum SystemMode {
+  MODE_CONTROL_Proportional,
+  MODE_MANUAL
 };
 
 // -----------------------------------------------------------------------
 // Settings struct
 #pragma pack(1)
 struct Mysettings {
-    double  Kp_lauter         = 32.0;
-    double  Ki_lauter         = 0.00;
-    double  k_heatLoss        = 4.9;
-    double  deadband1         = 4;
-    double  deadband2         = 0.5;
-    double  gamma             = 0.5;
+    double  Kp_lauter         = 12.0;
+    double  k_heatLoss        = 0.4;
+    double  deadband1         = 8;
+    double  deadband2         = 1;
+    double  gamma             = 0.35;
     double  targetTemp        = 25;
+    SystemMode systemMode = MODE_CONTROL_Proportional;
+    double manualPower = 0;
     BrewingLocation brewingLocation = OutDoor;
-    int16_t timeBeforeDisable = 2;
+    int16_t timeBeforeDisable = 4;
     boolean power             = true;
     int16_t maxMashTemp       = 100;
-    double  filter_adc1       = 0.90f;
-    double  filterDC          = 0.90f;
+    double  filter_adc1       = 0.0f;
+    double  filterDC          = 0.3f;
     int16_t alarmVolume       = 4;
     int16_t alarmTime         = 3;
     uint16_t settingsCheckValue = SETTINGS_CHKVAL;
@@ -153,11 +160,9 @@ extern double Output_lauterTemp;
 extern double current_lauterTemp;
 extern double previous_lauterTemp;
 extern double rawTemp;
-extern double current_airTemp;
 extern double outdoorTemp;
 extern double indoorTemp;
 extern double previous_indoorTemp;
-extern double previous_airTemp;
 extern double previous_outdoorTemp;
 extern double* ambientTempPtr;
 extern double DutyCycle;
@@ -187,10 +192,6 @@ extern const unsigned long readInterval;
 extern double const CAL_T1, CAL_T2, CAL_M1, CAL_M2;
 extern double a, b;
 
-// Dallas / OneWire
-extern OneWire         oneWire;
-extern DallasTemperature dallasTemp;
-
 // Water indicator
 extern bool waterDetected;
 
@@ -210,7 +211,9 @@ void loop();
 
 // Pages
 void page_MenuRoot();
-void page_MENU_CONTROL_MODE_PI();
+void page_MENU_MODE();
+void page_MENU_CONTROL_MODE_Proportional();
+void page_MENU_MANUAL_MODE();
 void page_MENU_MISC();
 void page_MENU_BREWING_LOCATION();
 
@@ -243,6 +246,9 @@ void printDoubleAtWidthDisplay2(double value, uint8_t width, char c);
 // Helpers
 const char* brewingLocationToString(BrewingLocation location);
 void updateAmbientSource(BrewingLocation loc);
+const char* systemModeToString(SystemMode mode);
+
+
 
 // Settings
 void sets_SetDeafault();
