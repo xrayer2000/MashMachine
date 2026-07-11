@@ -1521,7 +1521,7 @@ void page_MENU_MASH_PROGRAM(){//================================================
       settings.startLauteringProgram = false;
       settings.startHopProgram = false;
       settings.startWhirlpoolProgram = false;
-      if(waterDetected) settings.pump = true;
+      settings.pump = true;
       if(pendingMashStart) settings.targetTemp = settings.mashTemps[0];
     }
     changeValues [0] = false;
@@ -1639,7 +1639,7 @@ void page_MENU_LAUTERING_PROGRAM(){//===========================================
       settings.startMashProgram = false;
       settings.startHopProgram = false;
       settings.startWhirlpoolProgram = false;
-      if(waterDetected) settings.pump = true;
+      settings.pump = true;
       if(pendingLauterStart) settings.targetTemp = settings.lauteringTemp;
     }
     changeValues[0] = false;
@@ -1737,6 +1737,7 @@ void page_MENU_HOPS_PROGRAM(){//================================================
       settings.startMashProgram = false;
       settings.startLauteringProgram = false;
       settings.startWhirlpoolProgram = false;
+      settings.pump = false;
       if(pendingHopStart) settings.targetTemp = settings.boilTemp;
     }
     changeValues[0] = false;
@@ -1845,6 +1846,7 @@ void page_MENU_WHIRLPOOL_PROGRAM()//============================================
       settings.startMashProgram = false;
       settings.startLauteringProgram = false;
       settings.startHopProgram = false;
+      settings.pump = true;
       if(pendingWhirlpoolStart) settings.targetTemp = settings.whirlpoolTemp;
     }
     changeValues[0] = false;
@@ -2338,7 +2340,7 @@ void updateSettings()
     settings.startLauteringProgram = false;
     settings.startHopProgram = false;
     settings.startWhirlpoolProgram = false;
-    if(waterDetected) settings.pump = true;
+    settings.pump = true;
     updateAllItems = true;
   }
 
@@ -2349,7 +2351,7 @@ void updateSettings()
     settings.startLauteringProgram = true;
     settings.startHopProgram = false;
     settings.startWhirlpoolProgram = false;
-    if(waterDetected) settings.pump = true;
+    settings.pump = true;
     updateAllItems = true;
   }
 
@@ -2365,7 +2367,7 @@ void updateSettings()
     updateAllItems = true;
   }
 
-  if(current_mashTemp >= 81 && !tooHotForPump) // i dont want the pump to go whne its over 80 degrees, it damages the pump 
+  if(current_mashTemp >= 81 && !tooHotForPump) // i dont want the pump to go when its over 80 degrees, it damages the pump 
   {
     tooHotForPump = true;
     updateAllItems = true;
@@ -2501,10 +2503,10 @@ void updateSettings()
     if(startMashProgram_ && passedTimeS_mashProgram / 60.0 >= settings.mashTimes[0] + settings.mashTimes[1] + settings.mashTimes[2])
     {
       settings.targetTemp = settings.lauteringTemp;
-      settings.pump = true;
 
       if(!mashFinishedNotified)
       {
+        settings.pump = true;
         mashFinishedNotified = true;
         lastMashReminderTime = millis();
         client.publish("mashTun/lautering_alarm", "1", true); // mäskningen är färdig, nu är det dags att laka
@@ -2528,10 +2530,10 @@ void updateSettings()
     if(startLauteringProgram_ && passedTimeS_lauteringProgram / 60.0 >= settings.lauteringTime)
     {
       settings.targetTemp = settings.boilTemp;
-      settings.pump = false;
-
+      
       if(!lauteringFinishedNotified)
       {
+        settings.pump = false;
         lauteringFinishedNotified = true;
         lastLauteringReminderTime = millis();
         client.publish("mashTun/boil_alarm", "1", true); // lakningen är färdig, nu är det dags att koka
@@ -2558,6 +2560,8 @@ void updateSettings()
 
     // Time to hop notification
     if (startHopProgram_) {
+      settings.targetTemp = settings.boilTemp;
+
         for (int i = 0; i < 3; i++) {
             if (settings.hopTimes[i] == 0) continue; // hop addition disabled, no alarm
             float t = settings.boilTime - settings.hopTimes[i];
@@ -2589,46 +2593,37 @@ void updateSettings()
     }
 
     // Time to whirlpool notification
-    if (startHopProgram_)
+    if (startHopProgram_ && passedTimeS_hopProgram / 60.0 >= settings.boilTime)
     {
-      if(passedTimeS_hopProgram / 60.0 >= settings.boilTime)
+      settings.targetTemp = settings.whirlpoolTemp;
+
+      if (settings.whirlpoolTime != 0)
       {
-        settings.targetTemp = settings.whirlpoolTemp;
-        settings.pump = true;
-        if(settings.whirlpoolTime != 0)
+        if (!whirlpoolFinishedNotified)
         {
-          if(!whirlpoolFinishedNotified)
-          {
-            whirlpoolFinishedNotified = true;
-            lastWhirlpoolReminderTime = millis();
-            client.publish("mashTun/whirlpool_alarm", "1", true); // Nu är kokningen färdig, nu är det dags att virvla
-          }
-          else if(millis() - lastWhirlpoolReminderTime >= REMINDER_INTERVAL_MS)
-          {
-            lastWhirlpoolReminderTime = millis();
-            client.publish("mashTun/whirlpool_reminder", "1", false); // kokningen är färdig, för helvete
-          }
+          settings.pump = true;
+          whirlpoolFinishedNotified = true;
+          lastWhirlpoolReminderTime = millis();
+          client.publish("mashTun/whirlpool_alarm", "1", true);
         }
-      } 
-      else
-      {
-        settings.targetTemp = settings.boilTemp;
-        settings.pump = false;
+        else if (millis() - lastWhirlpoolReminderTime >= REMINDER_INTERVAL_MS)
+        {
+          lastWhirlpoolReminderTime = millis();
+          client.publish("mashTun/whirlpool_reminder", "1", false);
+        }
       }
     }
-
     else
     {
-      if(whirlpoolFinishedNotified)
+      if (whirlpoolFinishedNotified)
       {
-        client.publish("mashTun/whirlpool_alarm", "0", true); // reset — condition no longer true
+        client.publish("mashTun/whirlpool_alarm", "0", true);
       }
-      
+
       whirlpoolFinishedNotified = false;
     }
     
-   
-
+    // Time to cool down 
     if (startWhirlpoolProgram_)
     {
         if (passedTimeS_whirlpoolProgram / 60.0 >= settings.whirlpoolTime)
@@ -2636,12 +2631,8 @@ void updateSettings()
           settings.targetTemp = 15.0;
           settings.pump = false;
         }
-         
         else
-        { 
           settings.targetTemp = settings.whirlpoolTemp;
-          settings.pump = true;
-        }
     }
 
     analogWrite(alarmPin, settings.hopIndex != -1 ? settings.alarmVolume / 100.0f * 4095.0f : 0);

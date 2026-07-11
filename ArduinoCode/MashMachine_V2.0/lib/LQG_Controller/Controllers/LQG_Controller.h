@@ -84,6 +84,7 @@ private:
     double band1_ = 4.5;
     double band2_ = 1.0;
     double gamma_ = 0.8;
+    bool in_phase0_ = false;
     bool in_phase3_ = false;
     // =====================================================
     // Timing

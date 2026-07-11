@@ -142,7 +142,6 @@ bool LQGController::Compute()
     const double T     = *T_;
     const double r     = *Tset_;
     const double Tair  = *Tair_;
-    const double error = r - xhat_[0]; // Kalman smoothed error
 
     // =========================================================
     // Feedforward
@@ -167,6 +166,7 @@ bool LQGController::Compute()
     // =========================================================
     // Observer outputs — always computed, every phase
     // =========================================================
+    const double error = r - xhat_[0]; // Kalman smoothed error
     const double Ttilde = xhat_[0] - r;
     const double u_Kr   = 0.0;  // reserved: Kr_ * error
     const double xe[3]  = { Ttilde, xhat_[1], xI_ };
@@ -176,11 +176,22 @@ bool LQGController::Compute()
     // Phase selection
     // =========================================================
     double Qcmd = Qff;
+    const double COOL_ENTER_C = 0.65;
+
+    // ---------------------------------------------------------
+    // PHASE 0 : PASSIVE COOLING WITH HYSTERESIS
+    // ---------------------------------------------------------
+
+    if (error < -COOL_ENTER_C)
+    {
+        Qcmd       = 0.0;
+        in_phase3_ = false;   // no-op if already false, but makes the edge explici
+    }
 
     // ---------------------------------------------------------
     // PHASE 1 : BANG
     // ---------------------------------------------------------
-    if (error > band1_)
+    else if (error > band1_)
     {
         Qcmd       = Qmax_W_;
         in_phase3_ = false;
@@ -244,7 +255,7 @@ bool LQGController::Compute()
     const double Iterm  = -model_->Le[2] * xI_;
 
     strncpy(phase_str_,
-            (error > band1_) ? "BANG" : (error > band2_) ? "SLOPE" : "LQGI",
+            error < -COOL_ENTER_C ? "COOL" : (error > band1_) ? "BANG" : (error > band2_) ? "SLOPE" : "LQGI",
             sizeof(phase_str_));
 
     dbg_T_      = T;

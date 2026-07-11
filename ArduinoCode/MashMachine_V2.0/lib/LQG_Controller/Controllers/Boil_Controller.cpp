@@ -31,7 +31,7 @@ String BoilController::GetDebugString() const {
 
 bool BoilController::Compute()  
 {
-    double Qff   = model_.kLoss_W_per_degC * (T_ - Tair_);
+    double Qff   = model_.kLoss_W_per_degC * (Tset_ - Tair_);
     double error = Tset_ - T_;
     double u_Kr  = model_.Kr * error;
 
