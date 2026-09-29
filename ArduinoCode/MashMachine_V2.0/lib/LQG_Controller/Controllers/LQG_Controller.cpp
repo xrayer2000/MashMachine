@@ -176,7 +176,7 @@ bool LQGController::Compute()
     // Phase selection
     // =========================================================
     double Qcmd = Qff;
-    const double COOL_ENTER_C = 0.65;
+    const double COOL_ENTER_C = 2.2;
 
     // ---------------------------------------------------------
     // PHASE 0 : PASSIVE COOLING WITH HYSTERESIS

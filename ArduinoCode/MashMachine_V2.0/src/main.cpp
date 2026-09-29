@@ -138,13 +138,26 @@ const char* systemModeToString(SystemMode mode);
 
 Excitation excitation;
 
-enum BrewingLocation {
-  OutDoor,
-  InDoor
-};
-
+enum BrewingLocation {OutDoor, InDoor};
 const char* brewingLocationToString(BrewingLocation location);
 void updateAmbientSource(BrewingLocation loc);
+
+//Brewing stages
+enum class BrewStage { Idle, Mash, Lauter, Boil, Whirlpool };
+BrewStage currentStage   = BrewStage::Idle; // stage whose timer/state machine is currently active
+BrewStage requestedStage = BrewStage::Idle; // stage armed, waiting on a temperature gate before it becomes current
+bool hasRequestedStage() { return requestedStage != BrewStage::Idle; }
+// getTargetTemp(), getEntryTemp(), stageTempReached(), and startRequestedStage()
+// are defined further down (near updateSettings()), since they depend on
+// variables (currentMashStep, passedTimeS_*, current_mashTemp, tS) that are
+// declared later in this file.
+float getTargetTempByBrewStage(BrewStage stage);
+float getEntryTempByBrewStage(BrewStage stage);
+bool brewStageTempReached(BrewStage stage, float margin);
+void startRequestedBrewStage();
+bool waitingForTemperature = false;
+bool manualPumpOverride = false;
+constexpr float MARGIN = 0.03205f; // margin for temperature comparison (3.2%) aproximate to 2.5C
 
 //Menu structure
 enum pageType{
@@ -237,11 +250,6 @@ struct Mysettings{
 
   BrewingLocation brewingLocation = OutDoor;
 
-  boolean startMashProgram = 0;
-  boolean startLauteringProgram = 0;
-  boolean startHopProgram = 0;
-  boolean startWhirlpoolProgram = 0;
-
   int16_t mashTemps[3] = {66,76,78};
   int16_t mashTimes[3] = {60,15,15};
 
@@ -276,14 +284,6 @@ Mysettings oldSettings;
 void sets_SetDeafault();
 void sets_Load();
 void sets_Save();
-bool pendingMashStart = false;
-bool pendingLauterStart = false;
-bool pendingHopStart = false;
-bool pendingWhirlpoolStart = false;
-bool prevStartMashProgram_ = false;
-bool prevStartLauteringProgram_ = false;
-bool prevStartHopProgram_ = false;
-bool prevStartWhirlpoolProgram_ = false;
 //-----------------------------------------------------------------------
 //Time
 unsigned long previousTime = 0; 
@@ -377,15 +377,18 @@ double b;
 
 //-----------------------------------------------------------------------
 //Alarm/Notifications
+bool mashInstepNotified = false; 
 bool mashFinishedNotified = false;
 bool lauteringFinishedNotified = false;
 bool hopFinishedNotified[3] = {false, false, false};
 bool whirlpoolFinishedNotified = false;
+bool whirlpoolTransferNotified = false;
 
 // Reminder timers - repeat alarm every 5 min until the program is switched
 unsigned long lastMashReminderTime = 0;
 unsigned long lastLauteringReminderTime = 0;
 unsigned long lastWhirlpoolReminderTime = 0;
+unsigned long lastWhirlpoolFinishedReminderTime = 0;
 const unsigned long REMINDER_INTERVAL_MS = 5UL * 60UL * 1000UL; // 5 minutes
 //-----------------------------------------------------------------------
 //Water indicator
@@ -422,7 +425,8 @@ void subscribeMQTT();
 void publishWifiMqttStatus();
 void publishMessage();
 
-void resetAllAlarmsOnBoot();
+void resetAllAlarms();
+void republishAlarmStates();
 void updateSettings();
 void updateSensorValues();
 void updateDisp2();
@@ -535,6 +539,9 @@ void setup() {//=================================================SETUP==========
   EEPROM.begin(sizeof(settings));
   sets_Load();
 
+  // Set initial mash setpoint to first mash step
+  settings.targetTemp = getEntryTempByBrewStage(BrewStage::Mash);
+
   //PT100 Temperature probe
   PT100.readRTD();
   rawTemp = PT100.temperature(RNOMINAL, RREF);
@@ -553,7 +560,7 @@ void setup() {//=================================================SETUP==========
 
   setupWiFi(); //Home assistant
   setupMQTT(); //Home assistant
-  resetAllAlarmsOnBoot(); //Home assistant
+  resetAllAlarms(); //Home assistant
 
   WiFi.onEvent([](WiFiEvent_t event) {
     if (event == SYSTEM_EVENT_STA_DISCONNECTED) {
@@ -1401,7 +1408,7 @@ void page_MENU_MISC(){//=================================================MISC===
   }
 
        if(changeValues[0]){*&settings.power = !*&settings.power; changeValues [0] = false; updateItemValue = true; }
-  else if(changeValues[1] && waterDetected){*&settings.pump = !*&settings.pump; changeValues [1] = false; updateItemValue = true; }
+  else if(changeValues[1] && waterDetected){*&settings.pump = !*&settings.pump; manualPumpOverride = true; changeValues [1] = false; updateItemValue = true; }
   else if(changeValues[2])incrementDecrementDouble(&settings.filter_adc1, 0.01f, 0.0f, 0.99f);
   else if(changeValues[3])incrementDecrementDouble(&settings.filterDC, 0.01f, 0.0f, 0.99f);
   else if(changeValues[4])incrementDecrementInt(&settings.maxMashTemp, 1, 5, 110);
@@ -1501,32 +1508,48 @@ void page_MENU_MASH_PROGRAM(){//================================================
 
   if(changeValues[0])
   {
-    if(settings.startMashProgram)
-    {
-      // Already running — stop immediately
-      settings.startMashProgram = false;
-      pendingMashStart = false;
-      settings.startLauteringProgram = false;
-      settings.startHopProgram = false;
-      settings.startWhirlpoolProgram = false;
-      settings.pump = false;
-    }
-    else
-    {
-      // Arm/disarm
-      pendingMashStart = !pendingMashStart;
-      pendingLauterStart = false;
-      pendingHopStart = false;
-      pendingWhirlpoolStart = false;
-      settings.startLauteringProgram = false;
-      settings.startHopProgram = false;
-      settings.startWhirlpoolProgram = false;
-      settings.pump = true;
-      if(pendingMashStart) settings.targetTemp = settings.mashTemps[0];
-    }
-    changeValues [0] = false;
-    updateItemValue = true; 
-  } 
+      if(currentStage == BrewStage::Mash)
+      {
+          // Stop running program
+          currentStage = BrewStage::Idle;
+          requestedStage = BrewStage::Idle;
+          waitingForTemperature = false;
+          manualPumpOverride = false;
+          settings.pump = false;
+      }
+      else
+      {
+          // User wants to start Mash
+
+          requestedStage = BrewStage::Mash;
+
+          // fresh arm - allow the instep-temperature notice to fire again
+          mashInstepNotified = false;
+          lastMashReminderTime = 0;
+
+          client.publish("mashTun/mash_instep_alarm", "0", true);
+          client.publish("mashTun/mash_instep_reminder", "0", true);
+
+          if (brewStageTempReached(requestedStage, MARGIN))
+          {
+              // Already hot enough -> start immediately
+              startRequestedBrewStage();
+          }
+          else
+          {
+              waitingForTemperature = true;
+          }
+          // else:
+          // Don't start yet.
+          // updateTargetTemp() and updatePump() will prepare the machine.
+          // updateSettings() will start it automatically once the
+          // requested temperature is reached.
+      }
+
+      changeValues[0] = false;
+      updateItemValue = true;
+  }
+
   else if(changeValues[3])incrementDecrementInt(&settings.mashTemps[0], 1, 15, settings.maxMashTemp);
   else if(changeValues[4])incrementDecrementInt(&settings.mashTemps[1], 1, 15, settings.maxMashTemp);
   else if(changeValues[5])incrementDecrementInt(&settings.mashTemps[2], 1, 15, settings.maxMashTemp);
@@ -1579,8 +1602,8 @@ void page_MENU_MASH_PROGRAM(){//================================================
     {
       switch(i)
       {
-        case 1:      if(settings.startMashProgram) printOnOff(true);
-                else if(pendingMashStart) display1.print(F("ARM "));
+        case 1:      if(currentStage == BrewStage::Mash) printOnOff(true);
+                else if(requestedStage == BrewStage::Mash && waitingForTemperature) display1.print(F("ARM "));
                 else printOnOff(false); break;
         case 2: printInt32_tAtWidth(settings.targetTemp, 3, "C"); break;
 
@@ -1622,28 +1645,43 @@ void page_MENU_LAUTERING_PROGRAM(){//===========================================
  
   if(changeValues[0])
   {
-    if(settings.startLauteringProgram)
-    {
-      // Already running — stop immediately
-      settings.startLauteringProgram = false;
-      pendingLauterStart = false;
-      settings.pump = false;
-    }
-    else
-    {
-      // Arm/disarm
-      pendingLauterStart = !pendingLauterStart;
-      pendingMashStart = false;
-      pendingHopStart = false;
-      pendingWhirlpoolStart = false;
-      settings.startMashProgram = false;
-      settings.startHopProgram = false;
-      settings.startWhirlpoolProgram = false;
-      settings.pump = true;
-      if(pendingLauterStart) settings.targetTemp = settings.lauteringTemp;
-    }
-    changeValues[0] = false;
-    updateItemValue = true;
+      if(currentStage == BrewStage::Lauter)
+      {
+          // Already running — stop immediately
+          currentStage = BrewStage::Idle;
+          requestedStage = BrewStage::Idle;
+          waitingForTemperature = false;
+          settings.pump = false;
+          manualPumpOverride = false;
+      }
+      else
+      {
+          // User wants to start Lautering
+          requestedStage = BrewStage::Lauter;
+
+          // acknowledge mash completion
+          mashFinishedNotified = false;
+          lastMashReminderTime = 0;
+          client.publish("mashTun/lautering_reminder", "0", true);
+
+          if (brewStageTempReached(requestedStage, MARGIN))
+          {
+              // Temperature already reached -> start immediately
+              startRequestedBrewStage();
+          }
+          else
+          {
+              waitingForTemperature = true;
+          }
+          // Otherwise:
+          // Stay in the previous stage while heating.
+          // updateTargetTemp() and updatePump() will prepare the machine.
+          // updateSettings() will start Lautering automatically
+          // once the target temperature has been reached.
+      }
+
+      changeValues[0] = false;
+      updateItemValue = true;
   }
  
   else if(changeValues[3])incrementDecrementInt(&settings.lauteringTime, 1, 1, 120);
@@ -1691,8 +1729,8 @@ void page_MENU_LAUTERING_PROGRAM(){//===========================================
       switch(i)
       {
         case 1:
-            if(settings.startLauteringProgram) printOnOff(true);
-            else if(pendingLauterStart) display1.print(F("ARM "));
+            if(currentStage == BrewStage::Lauter) printOnOff(true);
+            else if(requestedStage == BrewStage::Lauter && waitingForTemperature) display1.print(F("ARM "));
             else printOnOff(false);
             break;
         case 2: printInt32_tAtWidth(settings.targetTemp, 3, "C"); break;
@@ -1722,30 +1760,47 @@ void page_MENU_HOPS_PROGRAM(){//================================================
 
   if(changeValues[0])
   {
-    if(settings.startHopProgram)
-    {
-      settings.startHopProgram = false;
-      pendingHopStart = false;
-      settings.pump = false;
-    }
-    else
-    {
-      pendingHopStart = !pendingHopStart;
-      pendingMashStart = false;
-      pendingLauterStart = false;
-      pendingWhirlpoolStart = false;
-      settings.startMashProgram = false;
-      settings.startLauteringProgram = false;
-      settings.startWhirlpoolProgram = false;
-      settings.pump = false;
-      if(pendingHopStart) settings.targetTemp = settings.boilTemp;
-    }
-    changeValues[0] = false;
-    updateItemValue = true;
+      if(currentStage == BrewStage::Boil)
+      {
+          // Already running — stop immediately
+          currentStage = BrewStage::Idle;
+          requestedStage = BrewStage::Idle;
+          waitingForTemperature = false;
+          settings.pump = false;
+          manualPumpOverride = false;
+      }
+      else
+      {
+          // User wants to start Boil
+          requestedStage = BrewStage::Boil;
+
+          // acknowledge Lautering completion
+          lauteringFinishedNotified = false;
+          lastLauteringReminderTime = 0;
+          client.publish("mashTun/boil_reminder", "0", true);
+
+          if (brewStageTempReached(requestedStage, MARGIN))
+          {
+              // Temperature already reached -> start immediately
+              startRequestedBrewStage();
+          }
+          else
+          {
+              waitingForTemperature = true;
+          }
+          // Otherwise:
+          // Stay in the previous stage while heating.
+          // updateTargetTemp() and updatePump() will prepare the machine.
+          // updateSettings() will start Boil automatically
+          // once the target temperature has been reached.
+      }
+
+      changeValues[0] = false;
+      updateItemValue = true;
   }
 
   else if(changeValues[3])incrementDecrementInt(&settings.boilTime, 1, 5, 120);
-  else if(changeValues[4]){incrementDecrementInt(&settings.boilTemp, 1, 90, settings.maxMashTemp); updateAllItems = true;}
+  else if(changeValues[4]){incrementDecrementInt(&settings.boilTemp, 1, 15, settings.maxMashTemp); updateAllItems = true;}
   else if(changeValues[6])incrementDecrementInt(&settings.hopTimes[0], 1, 0, 90);
   else if(changeValues[7])incrementDecrementInt(&settings.hopTimes[1], 1, 0, 90);
   else if(changeValues[8])incrementDecrementInt(&settings.hopTimes[2], 1, 0, 90);
@@ -1796,8 +1851,8 @@ void page_MENU_HOPS_PROGRAM(){//================================================
       switch(i)
       {
         case 1:
-          if(settings.startHopProgram) printOnOff(true);
-          else if(pendingHopStart) display1.print(F("ARM "));
+          if(currentStage == BrewStage::Boil) printOnOff(true);
+          else if(requestedStage == BrewStage::Boil && waitingForTemperature) display1.print(F("ARM "));
           else printOnOff(false);
           break;
         case 2: printInt32_tAtWidth(settings.targetTemp, 3, "C"); break;
@@ -1831,30 +1886,48 @@ void page_MENU_WHIRLPOOL_PROGRAM()//============================================
 
   if(changeValues[0])
   {
-    if(settings.startWhirlpoolProgram)
-    {
-      settings.startWhirlpoolProgram = false;
-      pendingWhirlpoolStart = false;
-      settings.pump = false;
-    }
-    else
-    {
-      pendingWhirlpoolStart = !pendingWhirlpoolStart;
-      pendingMashStart = false;
-      pendingLauterStart = false;
-      pendingHopStart = false;
-      settings.startMashProgram = false;
-      settings.startLauteringProgram = false;
-      settings.startHopProgram = false;
-      settings.pump = true;
-      if(pendingWhirlpoolStart) settings.targetTemp = settings.whirlpoolTemp;
-    }
-    changeValues[0] = false;
-    updateItemValue = true;
-  }
+      if(currentStage == BrewStage::Whirlpool)
+      {
+          // Already running — stop immediately
+          currentStage = BrewStage::Idle;
+          requestedStage = BrewStage::Idle;
+          waitingForTemperature = false;
+          settings.pump = false;
+          manualPumpOverride = false;
+      }
+      else
+      {
+          // User wants to start Whirlpool
+          requestedStage = BrewStage::Whirlpool;
 
+          // acknowledge Boil/Hops completion
+          hopFinishedNotified[0] = false;
+          hopFinishedNotified[1] = false;
+          hopFinishedNotified[2] = false;
+          client.publish("mashTun/whirlpool_reminder", "0", true);
+
+          if (brewStageTempReached(requestedStage, MARGIN))
+          {
+              // Wort has cooled sufficiently -> start immediately
+              startRequestedBrewStage();
+          }
+          else
+          {
+              waitingForTemperature = true;
+          }
+          // Otherwise:
+          // Keep cooling toward the whirlpool temperature.
+          // updateTargetTemp() and updatePump() will prepare the machine.
+          // updateSettings() will start Whirlpool automatically
+          // once the whirlpool temperature has been reached.
+      }
+
+      changeValues[0] = false;
+      updateItemValue = true;
+  }
+  
   else if(changeValues[3])incrementDecrementInt(&settings.whirlpoolTime, 1, 1, 120);
-  else if(changeValues[4]){incrementDecrementInt(&settings.whirlpoolTemp, 1, 60, settings.maxMashTemp); updateAllItems = true;}
+  else if(changeValues[4]){incrementDecrementInt(&settings.whirlpoolTemp, 1, 15, settings.maxMashTemp); updateAllItems = true;}
   else if(changeValues[6])
   {
     currPage = MENU_ROOT; 
@@ -1898,8 +1971,8 @@ void page_MENU_WHIRLPOOL_PROGRAM()//============================================
       switch(i)
       {
         case 1:
-            if(settings.startWhirlpoolProgram) printOnOff(true);
-            else if(pendingWhirlpoolStart) display1.print(F("ARM "));
+            if(currentStage == BrewStage::Whirlpool) printOnOff(true);
+            else if(requestedStage == BrewStage::Whirlpool && waitingForTemperature) display1.print(F("ARM "));
             else printOnOff(false);
             break;
         case 2: printInt32_tAtWidth(settings.targetTemp, 3, "C"); break;
@@ -2314,13 +2387,194 @@ void updateModelForCurrentTemp(LQGController& controller, double T, ModelID& act
   }
 }
 
-void resetAllAlarmsOnBoot()
+void resetAllAlarms()
 {
+  // Starting a new brew - clear all previous reminders
+  mashInstepNotified = false;
+  mashFinishedNotified = false;
+  lauteringFinishedNotified = false;
+  whirlpoolFinishedNotified = false;
+  whirlpoolTransferNotified = false;
+
+  hopFinishedNotified[0] = false;
+  hopFinishedNotified[1] = false;
+  hopFinishedNotified[2] = false;
+
+  lastMashReminderTime = 0;
+  lastLauteringReminderTime = 0;
+  lastWhirlpoolReminderTime = 0;
+  lastWhirlpoolFinishedReminderTime = 0;
+
+  client.publish("mashTun/mash_instep_alarm", "0", true);
   client.publish("mashTun/lautering_alarm", "0", true);
   client.publish("mashTun/boil_alarm", "0", true);
   client.publish("mashTun/hops_alarm", "0", true);
   client.publish("mashTun/whirlpool_alarm", "0", true);
+  client.publish("mashTun/whirlpool_finished_alarm", "0", true);
+  client.publish("mashTun/mash_instep_reminder", "0", true);
+  client.publish("mashTun/lautering_reminder", "0", true);
+  client.publish("mashTun/boil_reminder", "0", true);
+  client.publish("mashTun/whirlpool_reminder", "0", true);
+  client.publish("mashTun/whirlpool_finished_reminder", "0", true);
 }
+
+// Re-publish the TRUE current state of every one-shot alarm, retained.
+// Unlike resetAllAlarms() (boot-time, everything is false), this is safe to
+// call after any MQTT reconnect: it doesn't blindly zero things out, it just
+// makes sure the broker's retained value matches whatever this firmware
+// actually believes right now. This is what heals a stuck retained alarm
+// after a publish silently failed during a brief WiFi/MQTT drop mid-brew.
+void republishAlarmStates()
+{
+  client.publish("mashTun/mash_instep_alarm", mashInstepNotified ? "1" : "0", true);
+  client.publish("mashTun/lautering_alarm", mashFinishedNotified ? "1" : "0", true);
+  client.publish("mashTun/boil_alarm", lauteringFinishedNotified ? "1" : "0", true);
+  client.publish("mashTun/whirlpool_alarm", whirlpoolFinishedNotified ? "1" : "0", true);
+  client.publish("mashTun/whirlpool_finished_alarm", whirlpoolTransferNotified ? "1" : "0", true);
+
+  if (hopFinishedNotified[0] || hopFinishedNotified[1] || hopFinishedNotified[2])
+  {
+    char payload[2];
+    snprintf(payload, sizeof(payload), "%d", settings.hopIndex);
+    client.publish("mashTun/hops_alarm", payload, true);
+  }
+  else
+  {
+    client.publish("mashTun/hops_alarm", "0", true);
+  }
+}
+
+// ---- Deferred BrewStage helper implementations (declared near the top of
+// the file, defined here because they depend on state declared in between) ----
+
+float getTargetTempByBrewStage(BrewStage stage) //get current temp for current brew stage
+{
+  switch (stage)
+  {
+    case BrewStage::Mash:      return settings.mashTemps[currentMashStep];
+    case BrewStage::Lauter:    return settings.lauteringTemp;
+    case BrewStage::Boil:      return settings.boilTemp;
+    case BrewStage::Whirlpool:
+      return (passedTimeS_whirlpoolProgram / 60.0f >= settings.whirlpoolTime)
+               ? 15.0f : settings.whirlpoolTemp;
+    default: return settings.targetTemp;
+  }
+}
+
+float getEntryTempByBrewStage(BrewStage stage) //get the entry temp for the brew stage, used to determine if we can start the next stage
+{
+  switch (stage)
+  {
+    case BrewStage::Mash:      return settings.mashTemps[0]; // always step 0, not currentMashStep
+    case BrewStage::Lauter:    return settings.lauteringTemp;
+    case BrewStage::Boil:      return settings.boilTemp;
+    case BrewStage::Whirlpool: return settings.whirlpoolTemp;
+    default: return settings.targetTemp;
+  }
+}
+
+bool brewStageTempReached(BrewStage stage, float margin) // check if the current mash temp is within the margin of the entry temp for the requested stage
+{
+  float t = getEntryTempByBrewStage(stage);
+  if (stage == BrewStage::Whirlpool) // cooling into range — symmetric band
+    return current_mashTemp <= t * (1.0f + margin) && current_mashTemp >= t * (1.0f - margin);
+  return current_mashTemp >= t * (1.0f - margin); // heating up toward it
+}
+
+void startRequestedBrewStage() // transition to the requested stage, resetting any per-stage state
+{
+  manualPumpOverride = false;
+
+  currentStage   = requestedStage;
+  requestedStage = BrewStage::Idle;
+
+  if (currentStage == BrewStage::Mash)
+  {
+    currentMashStep         = 0;
+    mashStepAtTemp          = false;
+    mashStepTimerStartMs    = 0;
+    mashCompletedTimeMs     = 0;
+    passedTimeS_mashProgram = 0;
+  }
+
+  tS = millis();
+  updateAllItems = true;
+}
+
+// Single writer of settings.targetTemp. Depends on whichever stage is
+// currently controlling the target: the requested (armed/preheating) stage
+// takes priority over the active one, so the heater aims at the NEXT
+// stage's setpoint the moment it's armed — before it actually starts.
+void updateTargetTemp()
+{
+    BrewStage targetStage;
+
+    if (hasRequestedStage())
+    {
+        // A stage is armed -> target that stage
+        targetStage = requestedStage;
+    }
+    else if (currentStage != BrewStage::Idle)
+    {
+        // A stage is running -> target the active stage
+        targetStage = currentStage;
+    }
+    else
+    {
+        // Nothing is running -> always show the Mash entry temperature
+        settings.targetTemp = getEntryTempByBrewStage(BrewStage::Mash);
+        return;
+    }
+
+    float target = getTargetTempByBrewStage(targetStage);
+
+    if (target != settings.targetTemp)
+    {
+        settings.targetTemp = target;
+        updateAllItems = true;
+    }
+}
+
+// Single writer of settings.pump WHILE A STAGE IS ACTIVE OR ARMED.
+// With nothing running or requested (fully Idle), this is a no-op and pump
+// stays under manual control (MISC menu toggle) — the two ownership modes
+// don't overlap.
+void updatePump() // called from loop() every cycle
+{
+  if (manualPumpOverride)
+        return;
+
+  // if (!hasRequestedStage() && currentStage == BrewStage::Idle) return;
+
+  BrewStage pumpStage = hasRequestedStage() ? requestedStage : currentStage;
+
+  switch (pumpStage)
+  {
+    case BrewStage::Mash:
+      settings.pump = true;
+      break;
+    case BrewStage::Lauter:
+      settings.pump = (passedTimeS_lauteringProgram / 60.0f < settings.lauteringTime);
+      break;
+    case BrewStage::Boil:
+      settings.pump = false; // hops kör utan pump
+      break;
+    case BrewStage::Whirlpool:
+      // Only run the pump once whirlpool has actually started (not just requested)
+      if (currentStage == BrewStage::Whirlpool)
+        settings.pump = (passedTimeS_whirlpoolProgram / 60.0f >= settings.whirlpoolTime) ? false : true;
+      else
+        settings.pump = false;
+      break;
+    default:
+      if (currentStage == BrewStage::Idle && !whirlpoolTransferNotified && !mashInstepNotified)
+          settings.pump = true;
+      else
+          settings.pump = false;
+      break;
+  }
+}
+
 
 void updateSettings()
 {
@@ -2328,64 +2582,24 @@ void updateSettings()
   I: Elementet får aldrig vara på om det inte finns vatten i bryggverket
   II: Pumpen får aldrig vara igång om det inte finns vatten i bryggverket
   */ 
-  constexpr float MARGIN = 0.03205f; // margin for temperature comparison (3.2%) aproximate to 2.5C
 
   if(!waterDetected){pumpWater = false;} else {pumpWater = true;}
 
-  // --- Pending mash start: auto-trigger when setpoint reached ---
-  if(pendingMashStart && current_mashTemp >= settings.mashTemps[0] * (1.0f - MARGIN))
+  // --- Generic gated transition: the only place currentStage changes ---
+  if (waitingForTemperature && brewStageTempReached(requestedStage, MARGIN))
   {
-    pendingMashStart = false;
-    settings.startMashProgram = true;
-    settings.startLauteringProgram = false;
-    settings.startHopProgram = false;
-    settings.startWhirlpoolProgram = false;
-    settings.pump = true;
-    updateAllItems = true;
+      waitingForTemperature = false;
+      startRequestedBrewStage();
   }
 
-  if(pendingLauterStart && current_mashTemp >= settings.lauteringTemp * (1.0f - MARGIN))
-  {
-    pendingLauterStart = false;
-    settings.startMashProgram = false;
-    settings.startLauteringProgram = true;
-    settings.startHopProgram = false;
-    settings.startWhirlpoolProgram = false;
-    settings.pump = true;
-    updateAllItems = true;
-  }
-
-  if(pendingHopStart && current_mashTemp >= settings.boilTemp * (1.0f - MARGIN))
-  {
-    pendingHopStart = false;
-    settings.targetTemp = settings.boilTemp;   // <-- ADD THIS
-    settings.startMashProgram = false;
-    settings.startLauteringProgram = false;
-    settings.startHopProgram = true;
-    settings.startWhirlpoolProgram = false;
-    settings.pump = false; // hops kör utan pump
-    updateAllItems = true;
-  }
-
-  if(current_mashTemp >= 81 && !tooHotForPump) // i dont want the pump to go when its over 80 degrees, it damages the pump 
+  if(current_mashTemp >= 87 && !tooHotForPump) // i dont want the pump to go when its over 80 degrees, it damages the pump 
   {
     tooHotForPump = true;
     updateAllItems = true;
   }
-  else if(current_mashTemp <= 79 && tooHotForPump)
+  else if(current_mashTemp <= 85 && tooHotForPump)
   {
     tooHotForPump = false;
-    updateAllItems = true;
-  }
-
-  if(pendingWhirlpoolStart && current_mashTemp <= settings.whirlpoolTemp * (1.0f + MARGIN)  && current_mashTemp >= settings.whirlpoolTemp * (1.0f - MARGIN))
-  {
-    pendingWhirlpoolStart = false;
-    settings.startMashProgram = false;
-    settings.startLauteringProgram = false;
-    settings.startHopProgram = false;
-    settings.startWhirlpoolProgram = true;
-    settings.pump = true;
     updateAllItems = true;
   }
   
@@ -2404,39 +2618,11 @@ void updateSettings()
     digitalWrite(ledOnPin, HIGH);
     digitalWrite(ledWaterDetectedPin, !waterDetected);
 
-    bool startMashProgram_ = settings.startMashProgram;
-    bool startLauteringProgram_ = settings.startLauteringProgram;
-    bool startHopProgram_ = settings.startHopProgram;
-    bool startWhirlpoolProgram_ = settings.startWhirlpoolProgram;
-
-    // Reset tS när ett program startar eller byts
-    bool programChanged = (startMashProgram_ != prevStartMashProgram_) || 
-                          (startLauteringProgram_ != prevStartLauteringProgram_) ||
-                          (startHopProgram_ != prevStartHopProgram_) ||
-                          (startWhirlpoolProgram_ != prevStartWhirlpoolProgram_);
-
-    if(programChanged)
-      updateAllItems = true; // Force update of all items when program starts/stops or changes
-
-    // New mash program
-    if (startMashProgram_ && !prevStartMashProgram_)
-    {
-      currentMashStep = 0;
-      mashStepAtTemp = false;
-      mashStepTimerStartMs = 0;
-      mashCompletedTimeMs = 0;
-      passedTimeS_mashProgram = 0;
-      settings.targetTemp = settings.mashTemps[0];
-    }
-
-    if (programChanged || (!startMashProgram_ && !startLauteringProgram_ && !startHopProgram_ && !startWhirlpoolProgram_)) {
-      tS = millis();
-    }
-
+  
     // =====================================================
     // MASH PROGRAM
     // =====================================================
-    if (startMashProgram_)
+    if (currentStage == BrewStage::Mash)
     {
       settings.targetTemp = settings.mashTemps[currentMashStep];
 
@@ -2488,30 +2674,57 @@ void updateSettings()
     // =====================================================
     // OTHER PROGRAM TIMERS
     // =====================================================
-    passedTimeS_lauteringProgram = startLauteringProgram_ ? (millis() - tS) * 0.001f : 0;
-    passedTimeS_hopProgram       = startHopProgram_       ? (millis() - tS) * 0.001f : 0;
-    passedTimeS_whirlpoolProgram = startWhirlpoolProgram_ ? (millis() - tS) * 0.001f : 0;
+    passedTimeS_lauteringProgram = (currentStage == BrewStage::Lauter)    ? (millis() - tS) * 0.001f : 0;
+    passedTimeS_hopProgram       = (currentStage == BrewStage::Boil)      ? (millis() - tS) * 0.001f : 0;
+    passedTimeS_whirlpoolProgram = (currentStage == BrewStage::Whirlpool) ? (millis() - tS) * 0.001f : 0;
 
 
-    // Store states for next loop
-    prevStartMashProgram_      = startMashProgram_;
-    prevStartLauteringProgram_ = startLauteringProgram_;
-    prevStartHopProgram_       = startHopProgram_;
-    prevStartWhirlpoolProgram_ = startWhirlpoolProgram_;
+    // Mash water is up to instep temperature -> time to add the malt.
+    // The tun auto-heats toward the mash entry temp whenever nothing else is
+    // running or armed (see updateTargetTemp()'s Idle fallback) - that's the
+    // condition this notice tracks. It must NOT fire just because currentStage
+    // happens to be Idle while a *different* stage (Boil/Lauter/Whirlpool) is
+    // armed and heating toward its own setpoint instead.
+    bool targetingMashEntry = (currentStage == BrewStage::Idle) && (requestedStage == BrewStage::Idle || requestedStage == BrewStage::Mash);
+
+    if (targetingMashEntry)
+    {
+        if (!mashInstepNotified && brewStageTempReached(BrewStage::Mash, MARGIN))
+        {
+            mashInstepNotified = true;
+            lastMashReminderTime = millis();
+            client.publish("mashTun/mash_instep_alarm", "1", true);
+        }
+        else if (mashInstepNotified && millis() - lastMashReminderTime >= REMINDER_INTERVAL_MS)
+        {
+            lastMashReminderTime = millis();
+            client.publish("mashTun/mash_instep_reminder", "1", false);
+        }
+    }
+    else
+    {
+        if (mashInstepNotified)
+        {
+            client.publish("mashTun/mash_instep_alarm", "0", true);
+            client.publish("mashTun/mash_instep_reminder", "0", true);
+        }
+
+        mashInstepNotified = false;
+    }
 
     // Time to lauter notification
-    if(startMashProgram_ && passedTimeS_mashProgram / 60.0 >= settings.mashTimes[0] + settings.mashTimes[1] + settings.mashTimes[2])
+    if(currentStage == BrewStage::Mash && passedTimeS_mashProgram / 60.0 >= settings.mashTimes[0] + settings.mashTimes[1] + settings.mashTimes[2])
     {
-      settings.targetTemp = settings.lauteringTemp;
+      if (!hasRequestedStage()) requestedStage = BrewStage::Lauter;
 
       if(!mashFinishedNotified)
       {
-        settings.pump = true;
+        // settings.pump = true;
         mashFinishedNotified = true;
         lastMashReminderTime = millis();
         client.publish("mashTun/lautering_alarm", "1", true); // mäskningen är färdig, nu är det dags att laka
       }
-      else if(millis() - lastMashReminderTime >= REMINDER_INTERVAL_MS)
+      else if(!waitingForTemperature && millis() - lastMashReminderTime >= REMINDER_INTERVAL_MS)
       {
         lastMashReminderTime = millis();
         client.publish("mashTun/lautering_reminder", "1", false); //  mäskningen är färdig, för helvete
@@ -2527,18 +2740,20 @@ void updateSettings()
     }
 
     // Time to boil notification
-    if(startLauteringProgram_ && passedTimeS_lauteringProgram / 60.0 >= settings.lauteringTime)
+    if(currentStage == BrewStage::Lauter  && passedTimeS_lauteringProgram / 60.0 >= settings.lauteringTime)
     {
-      settings.targetTemp = settings.boilTemp;
+      // if (!hasRequestedStage()) requestedStage = BrewStage::Boil; 
+      //silent bug, after lautering, there is no wort in the mashtun, so the setPoint should still be lauterTemp.
+      // Only when the boilProgram starts, then setPoint = boilTemp.
       
       if(!lauteringFinishedNotified)
       {
-        settings.pump = false;
+        // settings.pump = false;
         lauteringFinishedNotified = true;
         lastLauteringReminderTime = millis();
         client.publish("mashTun/boil_alarm", "1", true); // lakningen är färdig, nu är det dags att koka
       }
-      else if(millis() - lastLauteringReminderTime >= REMINDER_INTERVAL_MS)
+      else if(!waitingForTemperature && millis() - lastLauteringReminderTime >= REMINDER_INTERVAL_MS)
       {
         lastLauteringReminderTime = millis();
         client.publish("mashTun/boil_reminder", "1", false); // lakningen är färdig, för helvete
@@ -2559,8 +2774,7 @@ void updateSettings()
     settings.hopIndex = -1;
 
     // Time to hop notification
-    if (startHopProgram_) {
-      settings.targetTemp = settings.boilTemp;
+    if (currentStage == BrewStage::Boil) {
 
         for (int i = 0; i < 3; i++) {
             if (settings.hopTimes[i] == 0) continue; // hop addition disabled, no alarm
@@ -2579,7 +2793,7 @@ void updateSettings()
             } else {
                   if (hopFinishedNotified[i]) 
                   {
-                    client.publish("mashTun/hops_alarm", "0", true);
+                    client.publish("mashTun/hops_alarm", "0", true); 
                   }
                   hopFinishedNotified[i] = false;
             }
@@ -2588,54 +2802,83 @@ void updateSettings()
     else {
         bool anyWasSet = false;
         for (int i = 0; i < 3; i++) if (hopFinishedNotified[i]) anyWasSet = true;
-        if (anyWasSet) client.publish("mashTun/hops_alarm", "0", true);
+        if (anyWasSet) client.publish("mashTun/hops_alarm", "0", true); 
         memset(hopFinishedNotified, false, sizeof(hopFinishedNotified));
     }
 
     // Time to whirlpool notification
-    if (startHopProgram_ && passedTimeS_hopProgram / 60.0 >= settings.boilTime)
+    if (currentStage == BrewStage::Boil && passedTimeS_hopProgram / 60.0 >= settings.boilTime)
     {
-      settings.targetTemp = settings.whirlpoolTemp;
+      // Arm Whirlpool as soon as boil time is up, regardless of temperature.
+      // This is what makes updateTargetTemp() switch the setpoint away from
+      // boilTemp immediately, so the wort actually starts cooling instead of
+      // continuing to boil until it magically reaches whirlpoolTemp on its own.
+      if (!hasRequestedStage()) requestedStage = BrewStage::Whirlpool;
 
-      if (settings.whirlpoolTime != 0)
+      if (settings.whirlpoolTime != 0 && brewStageTempReached(BrewStage::Whirlpool, MARGIN))
       {
         if (!whirlpoolFinishedNotified)
         {
-          settings.pump = true;
+          // settings.pump = true;
           whirlpoolFinishedNotified = true;
           lastWhirlpoolReminderTime = millis();
-          client.publish("mashTun/whirlpool_alarm", "1", true);
+          client.publish("mashTun/whirlpool_alarm", "1", true); // Kokningen är färdig, nu är det dags att virvla
         }
-        else if (millis() - lastWhirlpoolReminderTime >= REMINDER_INTERVAL_MS)
+        else if (!waitingForTemperature && millis() - lastWhirlpoolReminderTime >= REMINDER_INTERVAL_MS)
         {
           lastWhirlpoolReminderTime = millis();
-          client.publish("mashTun/whirlpool_reminder", "1", false);
+          client.publish("mashTun/whirlpool_reminder", "1", false); //vivlingen är färdig, för helvete
         }
       }
     }
-    else
+    else if (currentStage != BrewStage::Whirlpool)
     {
       if (whirlpoolFinishedNotified)
       {
-        client.publish("mashTun/whirlpool_alarm", "0", true);
+        client.publish("mashTun/whirlpool_alarm", "0", true); // reset when leaving Boil/Whirlpool sequence
       }
 
       whirlpoolFinishedNotified = false;
     }
-    
-    // Time to cool down 
-    if (startWhirlpoolProgram_)
+
+    // Whirlpool finished -> time to transfer to bucket
+    if (currentStage == BrewStage::Whirlpool &&
+        passedTimeS_whirlpoolProgram / 60.0 >= settings.whirlpoolTime)
     {
-        if (passedTimeS_whirlpoolProgram / 60.0 >= settings.whirlpoolTime)
+        if (!whirlpoolTransferNotified)
         {
-          settings.targetTemp = 15.0;
-          settings.pump = false;
+            whirlpoolTransferNotified = true;
+            lastWhirlpoolFinishedReminderTime = millis();
+
+            client.publish("mashTun/whirlpool_finished_alarm", "1", true );
         }
-        else
-          settings.targetTemp = settings.whirlpoolTemp;
+        else if (millis() - lastWhirlpoolFinishedReminderTime >= REMINDER_INTERVAL_MS)
+        {
+            lastWhirlpoolFinishedReminderTime = millis();
+            client.publish("mashTun/whirlpool_finished_reminder", "1", false);
+        }
     }
+    else
+    {
+        if (whirlpoolTransferNotified)
+        {
+            client.publish("mashTun/whirlpool_finished_alarm","0",true);
+            client.publish("mashTun/whirlpool_finished_reminder","0",true);
+        }
+
+        whirlpoolTransferNotified = false;
+    }
+    
+    // // Time to cool down 
+    // if (currentStage == BrewStage::Whirlpool && passedTimeS_whirlpoolProgram / 60.0 >= settings.whirlpoolTime)
+    // {
+    //   settings.pump = false;
+    // }
 
     analogWrite(alarmPin, settings.hopIndex != -1 ? settings.alarmVolume / 100.0f * 4095.0f : 0);
+
+    updateTargetTemp(); // the one and only place targetTemp gets written
+    updatePump();       // the one and only place settings.pump gets written while a stage is active or armed
 
     // PID_mashTemp.SetTunings(settings.Kp_mash, settings.Ki_mash, 0, settings.POnE_mash ? P_ON_E : P_ON_M);
     // PID_mashTemp.SetMode(AUTOMATIC);
@@ -2909,6 +3152,7 @@ void reconnectMQTT() //Homeassistant
       
       subscribeMQTT();
       publishWifiMqttStatus();
+      republishAlarmStates(); // heal any retained alarm that missed its publish while disconnected
     }
   }
 
@@ -2994,11 +3238,19 @@ void publishMessage() //Home Assistant only
   // --- Core readings ---
   doc["mashTempPT100"] = roundTo(current_mashTemp, 3);  // 3 decimal
   doc["airTemp"]       = roundTo(*ambientTempPtr, 2);   // 2 decimal
+  doc["activeModel"]   = modelIDToString(activeModel);
+  doc["brewStage"]     =  currentStage == BrewStage::Mash      ? "Mash Stage" :
+                          currentStage == BrewStage::Lauter    ? "Lauter Stage" :
+                          currentStage == BrewStage::Boil      ? "Boil Stage" :
+                          currentStage == BrewStage::Whirlpool ? "Whirlpool Stage" :
+                                                               "Idle";
+  doc["hopIndex"] = settings.hopIndex; // e.g. "hop1": true
   doc["timePassed"] = roundTo(
       (
-        settings.startLauteringProgram ? passedTimeS_lauteringProgram :
-        settings.startMashProgram ? passedTimeS_mashProgram :
-        settings.startHopProgram  ? passedTimeS_hopProgram  :
+        currentStage == BrewStage::Lauter ? passedTimeS_lauteringProgram :
+        currentStage == BrewStage::Mash   ? passedTimeS_mashProgram :
+        currentStage == BrewStage::Boil   ? passedTimeS_hopProgram  :
+        currentStage == BrewStage::Whirlpool ? passedTimeS_whirlpoolProgram :
                                   0.0f) / 60.0f,1);
   // --- Setpoint ---
   doc["targetTemp"]    = settings.targetTemp;
@@ -3014,8 +3266,6 @@ void publishMessage() //Home Assistant only
   doc["pumpOn"]        = (settings.pump && pumpWater && !tooHotForPump);
   // doc["hopsAlarm"]     = hopsAlarm;
   doc["waterDetected"] = waterDetected;
-
-  doc["hopIndex"] = settings.hopIndex; // e.g. "hop1": true
 
   // --- PI parameters ---
   doc["kp"]            = roundTo(settings.Kp_mash, 1);
