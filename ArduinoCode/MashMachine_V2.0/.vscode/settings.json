@@ -10,5 +10,6 @@
         "initializer_list": "cpp",
         "cmath": "cpp",
         "*.o": "cpp"
-    }
+    },
+    "claudeCodeChat.permissions.yoloMode": false
 }
