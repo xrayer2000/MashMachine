@@ -43,9 +43,6 @@ The finished vessel has an insulated exterior to reduce heat losses and improve 
 
 ### Construction Videos
 
-- [Watch mash tun construction – Video 1](PicturesAndMovies/VID_20240511_131652.mp4)
-- [Watch mash tun construction – Video 2](PicturesAndMovies/Messenger_creation_c8c5e69e-2280-4e5c-94d4-28867a03d884.mp4)
-
 ## System Implementation
 
 The original controller was removed and replaced with a custom-built ESP32-based control system.
