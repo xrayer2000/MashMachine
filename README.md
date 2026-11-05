@@ -45,8 +45,12 @@ The finished vessel has an insulated exterior to reduce heat losses and improve 
 
 ![Finished insulated MashMachine](PicturesAndMovies/IMG_20240512_221559.jpg)
 
-### Construction Videos - Welding
+### Construction Videos
+
+#### Welding
+
 https://github.com/user-attachments/assets/f25a4e15-6e44-4505-bbf4-2bfe34d7de5a
+
 https://github.com/user-attachments/assets/1c13a10b-537a-4cbe-8e05-aff711293a5b
 
 ## System Implementation
