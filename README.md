@@ -1,7 +1,3 @@
-
-
-https://github.com/user-attachments/assets/765fbfb0-d35c-4e52-bea4-36302ceb38ae
-
 # MashMachine
 
 An automated homebrewing system developed around a modified Vevor mash tun, an ESP32-based controller and custom temperature regulation.
