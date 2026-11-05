@@ -45,15 +45,9 @@ The finished vessel has an insulated exterior to reduce heat losses and improve 
 
 ![Finished insulated MashMachine](PicturesAndMovies/IMG_20240512_221559.jpg)
 
-### Construction Videos
-
-#### Video 1 – Mash Tun Fabrication
+### Construction Videos - Welding
 https://github.com/user-attachments/assets/f25a4e15-6e44-4505-bbf4-2bfe34d7de5a
-#### Video 2 – Assembly
 https://github.com/user-attachments/assets/1c13a10b-537a-4cbe-8e05-aff711293a5b
-#### Video 3 – Finished Mash Tun
-https://github.com/user-attachments/assets/1e911601-33d4-411b-b390-770013730027
-
 
 ## System Implementation
 
