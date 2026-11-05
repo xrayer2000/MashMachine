@@ -384,12 +384,13 @@ bool hopFinishedNotified[3] = {false, false, false};
 bool whirlpoolFinishedNotified = false;
 bool whirlpoolTransferNotified = false;
 
-// Reminder timers - repeat alarm every 5 min until the program is switched
+// Reminder timers - repeat alarm every 10 min until the program is switched
 unsigned long lastMashReminderTime = 0;
 unsigned long lastLauteringReminderTime = 0;
 unsigned long lastWhirlpoolReminderTime = 0;
 unsigned long lastWhirlpoolFinishedReminderTime = 0;
-const unsigned long REMINDER_INTERVAL_MS = 5UL * 60UL * 1000UL; // 5 minutes
+const unsigned long REMINDER_INTERVAL_MS = 10UL * 60UL * 1000UL; // 10 minutes
+const float INSTEP_UPPER_MARGIN = 0.10f; // no instep notice above entry temp + 10%
 //-----------------------------------------------------------------------
 //Water indicator
 bool waterDetected = true;
@@ -426,7 +427,6 @@ void publishWifiMqttStatus();
 void publishMessage();
 
 void resetAllAlarms();
-void republishAlarmStates();
 void updateSettings();
 void updateSensorValues();
 void updateDisp2();
@@ -1523,12 +1523,7 @@ void page_MENU_MASH_PROGRAM(){//================================================
 
           requestedStage = BrewStage::Mash;
 
-          // fresh arm - allow the instep-temperature notice to fire again
-          mashInstepNotified = false;
-          lastMashReminderTime = 0;
-
-          client.publish("mashTun/mash_instep_alarm", "0", true);
-          client.publish("mashTun/mash_instep_reminder", "0", true);
+          // arming silences notifications by itself (see stageNotify) - no flag resets here
 
           if (brewStageTempReached(requestedStage, MARGIN))
           {
@@ -1659,10 +1654,7 @@ void page_MENU_LAUTERING_PROGRAM(){//===========================================
           // User wants to start Lautering
           requestedStage = BrewStage::Lauter;
 
-          // acknowledge mash completion
-          mashFinishedNotified = false;
-          lastMashReminderTime = 0;
-          client.publish("mashTun/lautering_reminder", "0", true);
+          // arming silences notifications by itself (see stageNotify) - no flag resets here
 
           if (brewStageTempReached(requestedStage, MARGIN))
           {
@@ -1774,10 +1766,7 @@ void page_MENU_HOPS_PROGRAM(){//================================================
           // User wants to start Boil
           requestedStage = BrewStage::Boil;
 
-          // acknowledge Lautering completion
-          lauteringFinishedNotified = false;
-          lastLauteringReminderTime = 0;
-          client.publish("mashTun/boil_reminder", "0", true);
+          // arming silences notifications by itself (see stageNotify) - no flag resets here
 
           if (brewStageTempReached(requestedStage, MARGIN))
           {
@@ -1900,11 +1889,7 @@ void page_MENU_WHIRLPOOL_PROGRAM()//============================================
           // User wants to start Whirlpool
           requestedStage = BrewStage::Whirlpool;
 
-          // acknowledge Boil/Hops completion
-          hopFinishedNotified[0] = false;
-          hopFinishedNotified[1] = false;
-          hopFinishedNotified[2] = false;
-          client.publish("mashTun/whirlpool_reminder", "0", true);
+          // arming silences notifications by itself (see stageNotify) - no flag resets here
 
           if (brewStageTempReached(requestedStage, MARGIN))
           {
@@ -2387,9 +2372,57 @@ void updateModelForCurrentTemp(LQGController& controller, double T, ModelID& act
   }
 }
 
+// Fire-and-forget event. Never retained: every subscriber (Linux, Windows,
+// Home Assistant) is connected during a brew, and a retained "1" is exactly what
+// makes a reconnecting client replay an old alarm. Returns true only if the
+// message was really handed to the broker, so callers can retry next loop.
+static bool publishEvent(const char* topic, const char* payload)
+{
+  return client.connected() && client.publish(topic, payload, false);
+}
+
+// One notification channel = one-shot alarm + 5 min reminders.
+//   active   : the "stage finished, start the next one" condition is true
+//   silenced : the user has already ARMED the next stage -> say nothing at all
+//   notified : latch, true once the alarm was sent (or swallowed because armed)
+// Alarm  : published once when active becomes true.
+// Reminder: repeated every REMINDER_INTERVAL_MS while still active.
+// Both stop the moment active goes false (next stage started or program stopped).
+static void stageNotify(bool active, bool silenced, bool &notified, unsigned long &lastReminderMs,
+                        const char* alarmTopic, const char* reminderTopic)
+{
+  if (active && silenced)
+  {
+    notified = true;                       // user got there first: no sound, ever, for this stage
+    return;
+  }
+
+  if (active)
+  {
+    if (!notified)
+    {
+      if (publishEvent(alarmTopic, "1")) { notified = true; lastReminderMs = millis(); }
+    }
+    else if (millis() - lastReminderMs >= REMINDER_INTERVAL_MS)
+    {
+      if (publishEvent(reminderTopic, "1")) lastReminderMs = millis();
+    }
+    return;
+  }
+
+  if (notified)                            // condition gone -> back to "0" so HA sees the edge
+  {
+    if (publishEvent(alarmTopic, "0"))
+    {
+      publishEvent(reminderTopic, "0");
+      notified = false;
+    }
+  }
+}
+
 void resetAllAlarms()
 {
-  // Starting a new brew - clear all previous reminders
+  // Boot: nothing has fired yet
   mashInstepNotified = false;
   mashFinishedNotified = false;
   lauteringFinishedNotified = false;
@@ -2405,43 +2438,17 @@ void resetAllAlarms()
   lastWhirlpoolReminderTime = 0;
   lastWhirlpoolFinishedReminderTime = 0;
 
-  client.publish("mashTun/mash_instep_alarm", "0", true);
-  client.publish("mashTun/lautering_alarm", "0", true);
-  client.publish("mashTun/boil_alarm", "0", true);
-  client.publish("mashTun/hops_alarm", "0", true);
-  client.publish("mashTun/whirlpool_alarm", "0", true);
-  client.publish("mashTun/whirlpool_finished_alarm", "0", true);
-  client.publish("mashTun/mash_instep_reminder", "0", true);
-  client.publish("mashTun/lautering_reminder", "0", true);
-  client.publish("mashTun/boil_reminder", "0", true);
-  client.publish("mashTun/whirlpool_reminder", "0", true);
-  client.publish("mashTun/whirlpool_finished_reminder", "0", true);
-}
-
-// Re-publish the TRUE current state of every one-shot alarm, retained.
-// Unlike resetAllAlarms() (boot-time, everything is false), this is safe to
-// call after any MQTT reconnect: it doesn't blindly zero things out, it just
-// makes sure the broker's retained value matches whatever this firmware
-// actually believes right now. This is what heals a stuck retained alarm
-// after a publish silently failed during a brief WiFi/MQTT drop mid-brew.
-void republishAlarmStates()
-{
-  client.publish("mashTun/mash_instep_alarm", mashInstepNotified ? "1" : "0", true);
-  client.publish("mashTun/lautering_alarm", mashFinishedNotified ? "1" : "0", true);
-  client.publish("mashTun/boil_alarm", lauteringFinishedNotified ? "1" : "0", true);
-  client.publish("mashTun/whirlpool_alarm", whirlpoolFinishedNotified ? "1" : "0", true);
-  client.publish("mashTun/whirlpool_finished_alarm", whirlpoolTransferNotified ? "1" : "0", true);
-
-  if (hopFinishedNotified[0] || hopFinishedNotified[1] || hopFinishedNotified[2])
-  {
-    char payload[2];
-    snprintf(payload, sizeof(payload), "%d", settings.hopIndex);
-    client.publish("mashTun/hops_alarm", payload, true);
-  }
-  else
-  {
-    client.publish("mashTun/hops_alarm", "0", true);
-  }
+  publishEvent("mashTun/mash_instep_alarm", "0");
+  publishEvent("mashTun/lautering_alarm", "0");
+  publishEvent("mashTun/boil_alarm", "0");
+  publishEvent("mashTun/hops_alarm", "0");
+  publishEvent("mashTun/whirlpool_alarm", "0");
+  publishEvent("mashTun/whirlpool_finished_alarm", "0");
+  publishEvent("mashTun/mash_instep_reminder", "0");
+  publishEvent("mashTun/lautering_reminder", "0");
+  publishEvent("mashTun/boil_reminder", "0");
+  publishEvent("mashTun/whirlpool_reminder", "0");
+  publishEvent("mashTun/whirlpool_finished_reminder", "0");
 }
 
 // ---- Deferred BrewStage helper implementations (declared near the top of
@@ -2679,101 +2686,45 @@ void updateSettings()
     passedTimeS_whirlpoolProgram = (currentStage == BrewStage::Whirlpool) ? (millis() - tS) * 0.001f : 0;
 
 
+    // =====================================================
+    // NOTIFICATIONS
+    // Alarm = once, the first time a stage is finished.
+    // Reminder = every 5 min until the next stage is started.
+    // "Armed" = button pressed, tun only waits for temperature -> the user
+    // already knows, so nothing is published for that transition.
+    // =====================================================
+    const bool lauterArmed    = waitingForTemperature && requestedStage == BrewStage::Lauter;
+    const bool boilArmed      = waitingForTemperature && requestedStage == BrewStage::Boil;
+    const bool whirlpoolArmed = waitingForTemperature && requestedStage == BrewStage::Whirlpool;
+
     // Mash water is up to instep temperature -> time to add the malt.
-    // The tun auto-heats toward the mash entry temp whenever nothing else is
-    // running or armed (see updateTargetTemp()'s Idle fallback) - that's the
-    // condition this notice tracks. It must NOT fire just because currentStage
-    // happens to be Idle while a *different* stage (Boil/Lauter/Whirlpool) is
-    // armed and heating toward its own setpoint instead.
-    bool targetingMashEntry = (currentStage == BrewStage::Idle) && (requestedStage == BrewStage::Idle || requestedStage == BrewStage::Mash);
+    // Only while idle with nothing armed (an armed Mash starts by itself).
+    // Once notified it stays latched while idle, so a small temp dip doesn't re-fire it.
+    // Too-hot guard: if the tun is more than 10% above the entry temp (e.g. wort
+    // right after a finished whirlpool) it is not "mash water", so stay silent.
+    const float mashEntryTemp = getEntryTempByBrewStage(BrewStage::Mash);
+    const bool  tooHotForInstep = current_mashTemp > mashEntryTemp * (1.0f + INSTEP_UPPER_MARGIN);
+    const bool targetingMashEntry = (currentStage == BrewStage::Idle) && (requestedStage == BrewStage::Idle) && !tooHotForInstep;
+    stageNotify(targetingMashEntry && (mashInstepNotified || brewStageTempReached(BrewStage::Mash, MARGIN)),
+                false, mashInstepNotified, lastMashReminderTime, "mashTun/mash_instep_alarm", "mashTun/mash_instep_reminder");
 
-    if (targetingMashEntry)
-    {
-        if (!mashInstepNotified && brewStageTempReached(BrewStage::Mash, MARGIN))
-        {
-            mashInstepNotified = true;
-            lastMashReminderTime = millis();
-            client.publish("mashTun/mash_instep_alarm", "1", true);
-        }
-        else if (mashInstepNotified && millis() - lastMashReminderTime >= REMINDER_INTERVAL_MS)
-        {
-            lastMashReminderTime = millis();
-            client.publish("mashTun/mash_instep_reminder", "1", false);
-        }
-    }
-    else
-    {
-        if (mashInstepNotified)
-        {
-            client.publish("mashTun/mash_instep_alarm", "0", true);
-            client.publish("mashTun/mash_instep_reminder", "0", true);
-        }
+    // Mash finished -> time to lauter
+    const bool mashDone = currentStage == BrewStage::Mash && passedTimeS_mashProgram / 60.0 >= settings.mashTimes[0] + settings.mashTimes[1] + settings.mashTimes[2];
+    if (mashDone && !hasRequestedStage()) requestedStage = BrewStage::Lauter; // preheat only, NOT an arm
+    stageNotify(mashDone, lauterArmed, mashFinishedNotified, lastMashReminderTime, "mashTun/lautering_alarm", "mashTun/lautering_reminder");
 
-        mashInstepNotified = false;
-    }
+    // Lautering finished -> time to boil
+    // (silent bug note: after lautering there is no wort in the tun, so Boil is
+    //  deliberately NOT auto-armed here; setPoint stays lauterTemp until Boil starts.)
+    const bool lauterDone = currentStage == BrewStage::Lauter && passedTimeS_lauteringProgram / 60.0 >= settings.lauteringTime;
+    stageNotify(lauterDone, boilArmed, lauteringFinishedNotified, lastLauteringReminderTime, "mashTun/boil_alarm", "mashTun/boil_reminder");
 
-    // Time to lauter notification
-    if(currentStage == BrewStage::Mash && passedTimeS_mashProgram / 60.0 >= settings.mashTimes[0] + settings.mashTimes[1] + settings.mashTimes[2])
-    {
-      if (!hasRequestedStage()) requestedStage = BrewStage::Lauter;
-
-      if(!mashFinishedNotified)
-      {
-        // settings.pump = true;
-        mashFinishedNotified = true;
-        lastMashReminderTime = millis();
-        client.publish("mashTun/lautering_alarm", "1", true); // mäskningen är färdig, nu är det dags att laka
-      }
-      else if(!waitingForTemperature && millis() - lastMashReminderTime >= REMINDER_INTERVAL_MS)
-      {
-        lastMashReminderTime = millis();
-        client.publish("mashTun/lautering_reminder", "1", false); //  mäskningen är färdig, för helvete
-      }
-    }
-    else
-    {
-      if(mashFinishedNotified)
-      {
-        client.publish("mashTun/lautering_alarm", "0", true); // reset — condition no longer true
-      }
-      mashFinishedNotified = false;
-    }
-
-    // Time to boil notification
-    if(currentStage == BrewStage::Lauter  && passedTimeS_lauteringProgram / 60.0 >= settings.lauteringTime)
-    {
-      // if (!hasRequestedStage()) requestedStage = BrewStage::Boil; 
-      //silent bug, after lautering, there is no wort in the mashtun, so the setPoint should still be lauterTemp.
-      // Only when the boilProgram starts, then setPoint = boilTemp.
-      
-      if(!lauteringFinishedNotified)
-      {
-        // settings.pump = false;
-        lauteringFinishedNotified = true;
-        lastLauteringReminderTime = millis();
-        client.publish("mashTun/boil_alarm", "1", true); // lakningen är färdig, nu är det dags att koka
-      }
-      else if(!waitingForTemperature && millis() - lastLauteringReminderTime >= REMINDER_INTERVAL_MS)
-      {
-        lastLauteringReminderTime = millis();
-        client.publish("mashTun/boil_reminder", "1", false); // lakningen är färdig, för helvete
-      }
-    }
-    else
-    {
-      if(lauteringFinishedNotified)
-      {
-        client.publish("mashTun/boil_alarm", "0", true); // reset — condition no longer true
-      }
-      lauteringFinishedNotified = false;
-    }
-
+    // Time to hop notification (window per hop addition, no "next stage" involved)
     float m = passedTimeS_hopProgram / 60.0f;
     float d = settings.alarmTime / 60.0f;
 
     settings.hopIndex = -1;
 
-    // Time to hop notification
     if (currentStage == BrewStage::Boil) {
 
         for (int i = 0; i < 3; i++) {
@@ -2784,91 +2735,36 @@ void updateSettings()
                 settings.hopIndex = i + 1;
 
                 if (!hopFinishedNotified[i]) {
-                    hopFinishedNotified[i] = true;
                     char payload[2];
                     snprintf(payload, sizeof(payload), "%d", settings.hopIndex);
-                    client.publish("mashTun/hops_alarm", payload, true); // Nu är det dags att lägga i humlen
+                    if (publishEvent("mashTun/hops_alarm", payload)) hopFinishedNotified[i] = true;
                 }
                 break;
             } else {
-                  if (hopFinishedNotified[i]) 
-                  {
-                    client.publish("mashTun/hops_alarm", "0", true); 
-                  }
-                  hopFinishedNotified[i] = false;
+                if (hopFinishedNotified[i] && publishEvent("mashTun/hops_alarm", "0"))
+                    hopFinishedNotified[i] = false;
             }
         }
-    } 
+    }
     else {
-        bool anyWasSet = false;
-        for (int i = 0; i < 3; i++) if (hopFinishedNotified[i]) anyWasSet = true;
-        if (anyWasSet) client.publish("mashTun/hops_alarm", "0", true); 
-        memset(hopFinishedNotified, false, sizeof(hopFinishedNotified));
-    }
-
-    // Time to whirlpool notification
-    if (currentStage == BrewStage::Boil && passedTimeS_hopProgram / 60.0 >= settings.boilTime)
-    {
-      // Arm Whirlpool as soon as boil time is up, regardless of temperature.
-      // This is what makes updateTargetTemp() switch the setpoint away from
-      // boilTemp immediately, so the wort actually starts cooling instead of
-      // continuing to boil until it magically reaches whirlpoolTemp on its own.
-      if (!hasRequestedStage()) requestedStage = BrewStage::Whirlpool;
-
-      if (settings.whirlpoolTime != 0 && brewStageTempReached(BrewStage::Whirlpool, MARGIN))
-      {
-        if (!whirlpoolFinishedNotified)
-        {
-          // settings.pump = true;
-          whirlpoolFinishedNotified = true;
-          lastWhirlpoolReminderTime = millis();
-          client.publish("mashTun/whirlpool_alarm", "1", true); // Kokningen är färdig, nu är det dags att virvla
-        }
-        else if (!waitingForTemperature && millis() - lastWhirlpoolReminderTime >= REMINDER_INTERVAL_MS)
-        {
-          lastWhirlpoolReminderTime = millis();
-          client.publish("mashTun/whirlpool_reminder", "1", false); //vivlingen är färdig, för helvete
-        }
-      }
-    }
-    else if (currentStage != BrewStage::Whirlpool)
-    {
-      if (whirlpoolFinishedNotified)
-      {
-        client.publish("mashTun/whirlpool_alarm", "0", true); // reset when leaving Boil/Whirlpool sequence
-      }
-
-      whirlpoolFinishedNotified = false;
-    }
-
-    // Whirlpool finished -> time to transfer to bucket
-    if (currentStage == BrewStage::Whirlpool &&
-        passedTimeS_whirlpoolProgram / 60.0 >= settings.whirlpoolTime)
-    {
-        if (!whirlpoolTransferNotified)
-        {
-            whirlpoolTransferNotified = true;
-            lastWhirlpoolFinishedReminderTime = millis();
-
-            client.publish("mashTun/whirlpool_finished_alarm", "1", true );
-        }
-        else if (millis() - lastWhirlpoolFinishedReminderTime >= REMINDER_INTERVAL_MS)
-        {
-            lastWhirlpoolFinishedReminderTime = millis();
-            client.publish("mashTun/whirlpool_finished_reminder", "1", false);
+        for (int i = 0; i < 3; i++) {
+            if (hopFinishedNotified[i] && publishEvent("mashTun/hops_alarm", "0"))
+                hopFinishedNotified[i] = false;
         }
     }
-    else
-    {
-        if (whirlpoolTransferNotified)
-        {
-            client.publish("mashTun/whirlpool_finished_alarm","0",true);
-            client.publish("mashTun/whirlpool_finished_reminder","0",true);
-        }
 
-        whirlpoolTransferNotified = false;
-    }
-    
+    // Boil finished -> time to whirlpool
+    // Arm Whirlpool as soon as boil time is up (preheat/cool toward whirlpoolTemp),
+    // but only notify once the wort is actually in the whirlpool temperature band.
+    const bool boilDone = currentStage == BrewStage::Boil && passedTimeS_hopProgram / 60.0 >= settings.boilTime;
+    if (boilDone && !hasRequestedStage()) requestedStage = BrewStage::Whirlpool;
+    stageNotify(boilDone && settings.whirlpoolTime != 0 && (whirlpoolFinishedNotified || brewStageTempReached(BrewStage::Whirlpool, MARGIN)),
+                whirlpoolArmed, whirlpoolFinishedNotified, lastWhirlpoolReminderTime, "mashTun/whirlpool_alarm", "mashTun/whirlpool_reminder");
+
+    // Whirlpool finished -> time to transfer to bucket (no next stage, never silenced)
+    stageNotify(currentStage == BrewStage::Whirlpool && passedTimeS_whirlpoolProgram / 60.0 >= settings.whirlpoolTime,
+                false, whirlpoolTransferNotified, lastWhirlpoolFinishedReminderTime, "mashTun/whirlpool_finished_alarm", "mashTun/whirlpool_finished_reminder");
+
     // // Time to cool down 
     // if (currentStage == BrewStage::Whirlpool && passedTimeS_whirlpoolProgram / 60.0 >= settings.whirlpoolTime)
     // {
@@ -3152,7 +3048,6 @@ void reconnectMQTT() //Homeassistant
       
       subscribeMQTT();
       publishWifiMqttStatus();
-      republishAlarmStates(); // heal any retained alarm that missed its publish while disconnected
     }
   }
 
