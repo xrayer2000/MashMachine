@@ -1,4 +1,7 @@
 /Kicad/MashMachine/MashMachine-backups/
+Kicad/**/.history/
+Kicad/**/*.kicad_prl
+Kicad/**/*.lck
 slope of powerIn phase 2.ggb
 configuration.yaml
 save config file from linux.txt
